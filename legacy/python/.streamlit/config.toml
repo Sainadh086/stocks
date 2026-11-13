@@ -1,0 +1,28 @@
+# Light variant adapted from the Streamlit minimal theme.
+[theme]
+base = "light"
+primaryColor = "#0F766E"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F7F8"
+textColor = "#172B36"
+linkColor = "#0F766E"
+borderColor = "#DCE5E7"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "8px"
+buttonRadius = "8px"
+font = "sans-serif"
+baseFontSize = 15
+headingFontSizes = ["32px", "25px", "20px", "18px", "16px", "14px"]
+greenColor = "#15803D"
+redColor = "#DC2626"
+orangeColor = "#C2410C"
+grayColor = "#64748B"
+chartCategoricalColors = ["#0F766E", "#2563EB", "#9333EA", "#DC2626", "#CA8A04"]
+dataframeHeaderBackgroundColor = "#EDF3F4"
+dataframeHeaderTextColor = "#172B36"
+dataframeBorderColor = "#DCE5E7"
+
+[theme.sidebar]
+backgroundColor = "#F4F7F8"
+secondaryBackgroundColor = "#FFFFFF"

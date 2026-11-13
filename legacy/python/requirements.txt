@@ -1,0 +1,15 @@
+streamlit>=1.65,<2
+fastapi>=0.143,<1
+uvicorn>=0.35,<1
+httpx>=0.28,<1
+kiteconnect
+pandas
+numpy
+yfinance
+websockets>=15,<18
+beautifulsoup4
+mcp>=1.30,<2
+jsonschema>=4,<5
+cryptography>=43
+keyring>=25,<26
+pandas-market-calendars>=5,<6

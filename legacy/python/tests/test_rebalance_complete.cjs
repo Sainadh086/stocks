@@ -1,0 +1,10 @@
+const fs=require('node:fs');const vm=require('node:vm');const assert=require('node:assert/strict');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../shared/assets/complete.js'),'utf8').replace('export default function','function render');
+let clicked=0;const close={click:()=>clicked++};
+const dialog={querySelector:selector=>selector==='button[aria-label="Close"]'?close:null};
+const host={closest:()=>dialog};const parentElement={closest:()=>null,getRootNode:()=>({host})};
+const timers=[];const window={setTimeout:f=>{timers.push(f);return 1;},clearTimeout:()=>{}};
+const ctx=vm.createContext({window});vm.runInContext(source,ctx);
+ctx.render({parentElement});assert.equal(clicked,0);timers[0]();assert.equal(clicked,1);
+ctx.render({parentElement:{closest:()=>null,getRootNode:()=>({})}});
+assert.equal(clicked,1);console.log('Dialog close checks passed; uses native dismissal, no page reload.');

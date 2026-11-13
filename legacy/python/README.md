@@ -1,0 +1,1 @@
+The former Python/Streamlit/FastAPI implementation is retained only as migration reference. The active application is frontend/ plus server/. Nothing here is invoked by the current launchers or tests. Private data and the Keychain identity remain at the original project root. The moved virtual environment is archival and is not a supported launcher.

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">varshan logo</title>
+  <desc id="desc">A white V monogram inset in an orange V-shaped mark.</desc>
+  <defs>
+    <linearGradient id="orange" x1="32" y1="24" x2="204" y2="230" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFAD32"/>
+      <stop offset="0.48" stop-color="#FF791A"/>
+      <stop offset="1" stop-color="#E84B0B"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-10%" width="140%" height="130%">
+      <feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#A83A0C" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <path d="M24 20H67Q73 20 76 27L128 154L180 27Q183 20 189 20H232Q240 20 237 28L162 211Q151 234 128 246Q105 234 94 211L19 28Q16 20 24 20Z" fill="url(#orange)" filter="url(#shadow)"/>
+  <path d="M60 44H87L128 145L169 44H196L143 181Q137 196 128 203Q119 196 113 181Z" fill="#FFF"/>
+  <path d="M28 29H64" fill="none" stroke="#FFE2B5" stroke-width="3" stroke-linecap="round" opacity="0.65"/>
+</svg>
