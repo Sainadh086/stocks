@@ -35,7 +35,7 @@ interface IndiaTicket extends IndiaAction {
   cancel_requested?: boolean;
 }
 export interface IndiaLive {
-  broker: Broker;
+  broker: Broker | null;
   brokers: {
     id: Broker;
     name: string;
@@ -43,6 +43,7 @@ export interface IndiaLive {
     ending: string | null;
   }[];
   scope: string | null;
+  investment_scope?: string | null;
   configured?: boolean;
   settings: { budget: number; reserve_pct: number; symbols: string[] };
   auto: { enabled: boolean; error?: string; expires_at?: number };
@@ -64,6 +65,58 @@ export interface IndiaLive {
   error: string | null;
 }
 const keys = ["india-trading"];
+export function IndiaBrokerPicker({
+  label = "India broker account",
+  disabled = false,
+  data,
+}: {
+  label?: string;
+  disabled?: boolean;
+  data?: IndiaLive;
+}) {
+  const live = useData<IndiaLive>(keys, "/india/trading", undefined, !data);
+  const current = data ?? live.data;
+  const select = useAction((broker: Broker) =>
+    runJob("/india/broker", { broker }),
+  );
+  const pending = current?.tickets?.some((t) =>
+    ["submitting", "unknown", "submitted"].includes(t.status),
+  );
+  return (
+    <div>
+      <label>
+        {label}
+        <select
+          value={current?.broker ?? ""}
+          disabled={
+            disabled ||
+            !current ||
+            select.isPending ||
+            current?.auto?.enabled ||
+            pending
+          }
+          onChange={(e) => select.mutate(e.target.value as Broker)}
+        >
+          <option value="" disabled>
+            Choose a broker account
+          </option>
+          {current?.brokers.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+              {b.ending ? ` · ${b.ending}` : ""} ·{" "}
+              {b.connected ? "Connected" : "Connect in Account settings"}
+            </option>
+          ))}
+        </select>
+      </label>
+      <small>
+        Used for all India trades and long-term investments. Pause automation
+        and resolve pending orders before switching.
+      </small>
+      <Failure error={live.error || select.error} />
+    </div>
+  );
+}
 export function IndiaBrokerConnections() {
   const live = useData<IndiaLive>(keys, "/india/trading");
   const [broker, setBroker] = useState<"upstox" | "groww">("upstox");
@@ -217,10 +270,6 @@ export function IndiaTrading({
     // Forms belong to this broker account and retain edits during status polling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.scope, data?.broker]);
-  const select = useAction(
-    (broker: Broker) => runJob("/india/trading/broker", { broker }),
-    keys,
-  );
   const save = useAction(
     () =>
       runJob("/india/trading/settings", {
@@ -303,7 +352,7 @@ export function IndiaTrading({
     refresh.mutate(undefined, { onSettled: () => setManualRefresh(false) });
   }
   const busy =
-    select.isPending ||
+    !data?.broker ||
     save.isPending ||
     (manualRefresh && refresh.isPending) ||
     review.isPending ||
@@ -314,7 +363,6 @@ export function IndiaTrading({
     live.error ||
     data?.error ||
     data?.auto?.error ||
-    select.error ||
     save.error ||
     refresh.error ||
     review.error ||
@@ -405,21 +453,11 @@ export function IndiaTrading({
           </ol>
         )}
         <div className="form-row">
-          <label>
-            Trading broker
-            <select
-              value={data.broker}
-              disabled={busy || data.auto.enabled || pending}
-              onChange={(e) => select.mutate(e.target.value as Broker)}
-            >
-              {data.brokers.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name} ·{" "}
-                  {b.connected ? "Connected" : "Connect in Account settings"}
-                </option>
-              ))}
-            </select>
-          </label>
+          <IndiaBrokerPicker
+            label="Trading broker"
+            data={data}
+            disabled={!!data.broker && busy}
+          />
           <label>
             Budget (₹)
             <PrivateInput

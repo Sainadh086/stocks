@@ -25,6 +25,7 @@ import type {
   Preferences,
   Row,
 } from "./types";
+import { IndiaBrokerPicker, type IndiaLive } from "./india-trading";
 import { KiteHistory, KiteRebalance } from "./trading";
 import { BenchmarkInsights } from "./benchmark-insights";
 import { WeeklyDashboard } from "./weekly-events";
@@ -80,11 +81,19 @@ export function Holdings() {
   const data = useData<Portfolios>("portfolios", "/portfolios");
   const accounts = useData<Accounts>("accounts", "/accounts");
   const sync = useAction(() => runJob("/accounts/sync"));
+  const india = useData<IndiaLive>(["india-trading"], "/india/trading");
+  const currentIndia = data.data?.india.scope === india.data?.investment_scope;
   const us = data.data?.us;
   const currentUS =
     !us?.scope || us.scope === accounts.data?.roles.long_term.scope;
   const workspace =
-    region === "India" ? data.data?.india : currentUS ? us : undefined;
+    region === "India"
+      ? currentIndia
+        ? data.data?.india
+        : undefined
+      : currentUS
+        ? us
+        : undefined;
   const rows = workspace?.holdings || [];
   const values = rows.map((row) =>
     num(row.market_value_inr ?? row.market_value ?? row.value),
@@ -106,6 +115,7 @@ export function Holdings() {
           <Refresh market={region} />
         </div>
       </div>
+      {region === "India" && <IndiaBrokerPicker />}
       <Failure error={data.error || sync.error || workspace?.error} />
       <div className="metrics">
         <Metric
@@ -354,7 +364,12 @@ function Gems({ rows, market }: { rows: Row[]; market: "India" | "US" }) {
 export function Recommendations() {
   const [region, setRegion] = useState<"India" | "US">("India");
   const [strategy, setStrategy] = useState<Strategy | "gems">("momentum");
-  const [plan, setPlan] = useState<IndiaPlan | null>(null);
+  const india = useData<IndiaLive>(["india-trading"], "/india/trading");
+  const broker = india.data?.brokers?.find((b) => b.id === india.data?.broker);
+  const identity = `${india.data?.broker ?? ""}:${india.data?.investment_scope ?? ""}`;
+  const [planIdentity, setPlanIdentity] = useState("");
+  const [savedPlan, setPlan] = useState<IndiaPlan | null>(null);
+  const plan = planIdentity === identity ? savedPlan : null;
   const [selected, setSelected] = useState<string[]>([]);
   const [exits, setExits] = useState<string[]>([]);
   const [kite, setKite] = useState(false);
@@ -365,14 +380,15 @@ export function Recommendations() {
       request<IndiaPlan>("/india/plan", {
         strategy,
         ...(custom ? { selected, exits } : {}),
-      }),
+      }).then((plan) => ({ plan, identity })),
     [],
   );
   useEffect(() => {
     if (action.data) {
-      setPlan(action.data);
-      setSelected(action.data.selected);
-      setExits(action.data.exits);
+      setPlan(action.data.plan);
+      setPlanIdentity(action.data.identity);
+      setSelected(action.data.plan.selected);
+      setExits(action.data.plan.exits);
     }
   }, [action.data]);
   const picks = data.data?.us.picks || [];
@@ -426,6 +442,7 @@ export function Recommendations() {
         </div>
         <Refresh market={region} gems={strategy === "gems"} />
       </div>
+      {region === "India" && <IndiaBrokerPicker />}
       <Failure error={data.error} />
       {strategy === "gems" ? (
         <>
@@ -445,7 +462,7 @@ export function Recommendations() {
             <div className="form-row">
               <button
                 className="primary"
-                disabled={action.isPending}
+                disabled={action.isPending || !india.data?.broker}
                 onClick={() => action.mutate(false)}
               >
                 {action.isPending ? "Preparing…" : "Load recommendation plan"}
@@ -530,7 +547,7 @@ export function Recommendations() {
                     JSON.stringify(exits) !== JSON.stringify(plan.exits)
                   }
                 >
-                  Review in Kite
+                  Review in {broker?.name ?? "selected broker"}
                 </button>
               }
             >
@@ -559,6 +576,8 @@ export function Recommendations() {
           )}
           {kite && plan && (
             <KiteRebalance
+              key={identity}
+              brokerName={broker?.name ?? "India broker"}
               plan={{ strategy, selected: plan.selected, exits: plan.exits }}
               onClose={() => setKite(false)}
             />
@@ -650,9 +669,10 @@ export function Benchmarks() {
       ?.filter((index) => index.region === (role === "India" ? "India" : "US"))
       .map((index) => index.name) || benchmarks[role];
   const accounts = useData<Accounts>("accounts", "/accounts");
+  const india = useData<IndiaLive>(["india-trading"], "/india/trading");
   const scope =
     role === "India"
-      ? "India"
+      ? (india.data?.investment_scope ?? "unselected")
       : accounts.data?.roles[role].scope ||
         accounts.data?.roles[role].ending ||
         "local";
@@ -938,12 +958,16 @@ export function Learning() {
 
 export function AccountSummary() {
   const data = useData<Accounts>("accounts", "/accounts");
+  const india = useData<IndiaLive>(["india-trading"], "/india/trading");
+  const broker = india.data?.brokers?.find((b) => b.id === india.data?.broker);
   const connected =
     data.data?.roles.long_term.selected && data.data?.roles.trading.selected;
   return (
     <Badge tone={connected ? "bullish" : ""}>
       {connected ? "Robinhood configured" : "Set up accounts"} ·{" "}
-      {data.data?.kite_connected ? "Kite connected" : "Kite offline"}
+      {broker
+        ? `${broker.name} · ${broker.connected ? "Connected" : "Connect account"}`
+        : "Choose India broker"}
     </Badge>
   );
 }

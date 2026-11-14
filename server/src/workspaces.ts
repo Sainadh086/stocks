@@ -19,9 +19,17 @@ import {
 } from "./shared/calendar.js";
 import { indiaSnapshot, holdings, portfolios } from "./analysis.js";
 import { roles, scope } from "./brokers/accounts.js";
+import {
+  investmentDir,
+  investmentScope,
+  requireBroker,
+} from "./brokers/india-selection.js";
 export type Role = "India" | "long_term" | "trading";
 const frame = (prefix: string) => {
-  const path = latest(INDIA, prefix);
+  const path = latest(
+    prefix.startsWith("zerodha_") ? investmentDir() : INDIA,
+    prefix,
+  );
   return path ? store.csv(path) : [];
 };
 function indiaBreadth(day: string): string {
@@ -56,10 +64,11 @@ export function indiaPlan(
   selected?: string[],
   exits?: string[],
 ): Row {
+  requireBroker();
   const snapshot = indiaSnapshot(),
     held: Row[] = snapshot.holdings ?? [];
-  if (!held.length)
-    throw new Error("Run India analysis to load holdings first.");
+  if (!snapshot.date)
+    throw new Error("Run India analysis to load the selected account first.");
   const ranked = frame("nifty_midsmallcap_400_momentum_ranked_"),
     potential = frame("zerodha_potential_replacements_"),
     saved = frame("zerodha_target_plan_"),
@@ -272,7 +281,9 @@ export function indiaPlan(
 }
 export function comparisonIdentity(role: Role): string {
   const identity =
-    role === "India" ? "India" : role + ":" + (roles()[role] ?? "local");
+    role === "India"
+      ? "India:" + (investmentScope() ?? "unselected")
+      : role + ":" + (roles()[role] ?? "local");
   return createHash("sha256").update(identity).digest("hex").slice(0, 20);
 }
 export function comparisonHoldings(
@@ -285,7 +296,7 @@ export function comparisonHoldings(
       symbol: h.symbol + (h.exchange === "BSE" ? ".BO" : ".NS"),
       qty: h.shares,
     }));
-    identity = "India";
+    identity = "India:" + (investmentScope() ?? "unselected");
   } else {
     const number = roles()[role];
     identity = role + ":" + (number ?? "local");
@@ -435,7 +446,7 @@ export async function compare(
   });
   return {
     insights,
-    scope: role === "India" ? "India" : scope(roles()[role]),
+    scope: role === "India" ? investmentScope() : scope(roles()[role]),
     holdings: held.rows,
     role,
     benchmark: names[0],

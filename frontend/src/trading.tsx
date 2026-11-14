@@ -1068,24 +1068,31 @@ function PaperTrading() {
 export function KiteRebalance({
   plan,
   onClose,
+  brokerName,
 }: {
   plan: { strategy: Strategy; selected: string[]; exits: string[] };
   onClose: () => void;
+  brokerName: string;
 }) {
   const [draft, setDraft] = useState<KiteDraft | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [batch, setBatch] = useState<Batch | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
-  const prepare = useAction(() => runJob<KiteDraft>("/kite/draft", plan), []);
+  const prepare = useAction(
+    () => runJob<KiteDraft>("/india/investing/draft", plan),
+    [],
+  );
   const review = useAction(
-    () => runJob<Batch>("/kite/review", { id: draft?.id, rows }),
+    () => runJob<Batch>("/india/investing/review", { id: draft?.id, rows }),
     [],
   );
   const submit = useAction(() =>
-    runJob<Batch>(`/kite/batches/${batch?.id}/confirm`, { acknowledged: true }),
+    runJob<Batch>(`/india/investing/batches/${batch?.id}/confirm`, {
+      acknowledged: true,
+    }),
   );
   const check = useAction(() =>
-    runJob<Batch>(`/kite/batches/${batch?.id}/status`),
+    runJob<Batch>(`/india/investing/batches/${batch?.id}/status`),
   );
   useEffect(() => {
     prepare.mutate();
@@ -1121,12 +1128,12 @@ export function KiteRebalance({
     setAcknowledged(false);
   }
   return (
-    <Modal title="Review Kite rebalance" onClose={onClose}>
+    <Modal title={`Review ${brokerName} rebalance`} onClose={onClose}>
       <Failure
         error={prepare.error || review.error || submit.error || check.error}
       />
       {prepare.isPending ? (
-        <Notice>Loading current Kite holdings and prices…</Notice>
+        <Notice>Loading current {brokerName} holdings and prices…</Notice>
       ) : !draft ? (
         <Empty title="Could not open the editor" />
       ) : (
@@ -1138,7 +1145,7 @@ export function KiteRebalance({
                 holdings, funds and account identity at review and confirmation.
               </p>
               <div className="table-scroll">
-                <table aria-label="Kite share editor">
+                <table aria-label={`${brokerName} share editor`}>
                   <thead>
                     <tr>
                       <th>Stock</th>
@@ -1187,10 +1194,10 @@ export function KiteRebalance({
             <>
               <Notice>
                 Broker review · {batch.status}
-                {batch.user ? ` · Kite ${String(batch.user)}` : ""}
+                {batch.user ? ` · ${brokerName} ${String(batch.user)}` : ""}
               </Notice>
               <Failure error={batch.error} />
-              <Table rows={batch.orders} name="Reviewed Kite orders" />
+              <Table rows={batch.orders} name="Reviewed investment orders" />
               {batch.status === "review" ? (
                 <>
                   <label className="check confirmation">
@@ -1199,7 +1206,8 @@ export function KiteRebalance({
                       checked={acknowledged}
                       onChange={(e) => setAcknowledged(e.target.checked)}
                     />
-                    I confirm these real Kite orders in the displayed account.
+                    I confirm these real {brokerName} orders in the displayed
+                    account.
                   </label>
                   <button
                     className="primary"
@@ -1208,23 +1216,15 @@ export function KiteRebalance({
                   >
                     {submit.isPending
                       ? "Submitting…"
-                      : "Confirm real Kite orders"}
+                      : `Confirm real ${brokerName} orders`}
                   </button>
                 </>
               ) : (
                 <>
-                  <Table rows={batch.results} name="Kite order results" />
+                  <Table rows={batch.results} name="Investment order results" />
                   <button disabled={pending} onClick={() => check.mutate()}>
                     Check broker order status
                   </button>
-                  <a
-                    className="external"
-                    href="https://kite.zerodha.com/orders"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open Kite orders ↗
-                  </a>
                 </>
               )}
             </>
@@ -1236,15 +1236,20 @@ export function KiteRebalance({
 }
 
 export function KiteHistory() {
-  const history = useData<Batch[]>("kite-batches", "/kite/batches");
+  const india = useData<{ broker: string | null; scope: string | null }>(
+    ["india-trading"],
+    "/india/trading",
+  );
+  const history = useData<Batch[]>("kite-batches", "/india/investing/batches");
   const [opened, setOpened] = useState<Batch | null>(null);
+  useEffect(() => setOpened(null), [india.data?.broker, india.data?.scope]);
   const check = useAction(
-    (id: string) => runJob<Batch>(`/kite/batches/${id}/status`),
+    (id: string) => runJob<Batch>(`/india/investing/batches/${id}/status`),
     ["kite-batches"],
   );
   return (
     <Card
-      title="Kite rebalance history"
+      title="India investment rebalance history"
       subtitle="Reviewed and submitted baskets remain available after closing the editor."
     >
       <Failure error={history.error || check.error} />
@@ -1267,17 +1272,17 @@ export function KiteHistory() {
           ))}
         </div>
       ) : (
-        <p className="footnote">No saved Kite rebalances.</p>
+        <p className="footnote">No saved investment rebalances.</p>
       )}
       {opened && (
         <Modal
-          title={`Kite rebalance · ${String(opened.user || "")}`}
+          title={`Investment rebalance · ${String(opened.user || "")}`}
           onClose={() => setOpened(null)}
         >
           <Badge>{opened.status}</Badge>
           <Failure error={opened.error || check.error} />
-          <Table rows={opened.orders} name="Saved Kite orders" />
-          <Table rows={opened.results} name="Saved Kite results" />
+          <Table rows={opened.orders} name="Saved investment orders" />
+          <Table rows={opened.results} name="Saved investment results" />
           <button
             disabled={check.isPending}
             onClick={() => check.mutate(opened.id, { onSuccess: setOpened })}

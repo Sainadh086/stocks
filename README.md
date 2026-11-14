@@ -69,6 +69,14 @@ the original authenticated Fernet format. On macOS the default key stays in Keyc
 The first Node launch may ask macOS for Keychain access. Do not move the project
 without also migrating its Keychain identity. No plaintext key file is created.
 
+Choose **India broker account** in Account settings, Holdings or Recommendations.
+There is no default broker: the saved Kite, Upstox or Groww account applies to
+both India intraday trading and long-term holdings, analysis and delivery orders.
+Connecting a broker does not select it. Existing installations must confirm their
+choice once. Refresh India analysis after selecting an account; account histories
+and plans are stored separately. Pause automation and reconcile pending orders
+before switching. US account roles remain separate.
+
 Both Robinhood account roles are selected explicitly and persist until changed.
 Long-term analysis uses the investing account; intraday orders require the
 separate saved Agentic trading account. Live budgets are account-specific and

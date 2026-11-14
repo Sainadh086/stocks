@@ -1,5 +1,9 @@
 import { MobileSettings, NotificationSettings } from "./mobile";
-import { IndiaBrokerConnections, type IndiaLive } from "./india-trading";
+import {
+  IndiaBrokerConnections,
+  IndiaBrokerPicker,
+  type IndiaLive,
+} from "./india-trading";
 import { useAppearance } from "./appearance";
 import {
   Palette,
@@ -377,8 +381,8 @@ export function AccountSettings({
               <h3>Broker connections</h3>
               <p>
                 {page === "india-trading"
-                  ? "Connect or renew your India trading account. Expand US accounts to manage Robinhood."
-                  : "Choose separate accounts for US investing and trading. Manage India broker sessions below."}
+                  ? "Choose one India broker account for trading and long-term investing. Expand US accounts to manage Robinhood."
+                  : "Choose your India broker for trading and long-term investing, and separate US investing and trading accounts."}
               </p>
             </div>
             <Badge>Encrypted locally</Badge>
@@ -394,6 +398,9 @@ export function AccountSettings({
               openLogin.error
             }
           />
+          <Card title="India broker account">
+            <IndiaBrokerPicker />
+          </Card>
           <details
             className="broker-us-details"
             open={page !== "india-trading"}

@@ -1,12 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import {
-  INDIA,
-  store,
-  Mutex,
-  errorMessage,
-  type Row,
-} from "../shared/storage.js";
+import { store, Mutex, errorMessage, type Row } from "../shared/storage.js";
 import { localDay, session, phase } from "../shared/calendar.js";
 import { history } from "../shared/prices.js";
 import { scope, validateBudget } from "../brokers/accounts.js";
@@ -22,7 +15,14 @@ import {
   learningAdvisor,
 } from "../learning.js";
 
-export const indiaTradingFile = join(INDIA, "live_intraday_trading.json");
+import {
+  indiaTradingFile,
+  selectedBroker,
+  requireBroker,
+  investmentScope,
+} from "../brokers/india-selection.js";
+import { batches, unresolved, submitLock } from "../brokers/kite.js";
+export { indiaTradingFile } from "../brokers/india-selection.js";
 export const defaultSymbols = [
   "RELIANCE",
   "HDFCBANK",
@@ -309,7 +309,7 @@ export class IndiaTrading {
   private lastFeed = 0;
   private stopped = false;
   constructor(
-    private readonly changed = () => {},
+    private readonly changed = (_selectionChanged = false) => {},
     private readonly sources = {
       snapshot: brokers.snapshot,
       place: brokers.place,
@@ -318,12 +318,15 @@ export class IndiaTrading {
     },
   ) {
     this.state = store.json<Row>(indiaTradingFile, {
-      broker: "kite",
+      broker: null,
       accounts: {},
       current: {},
     });
     this.state.accounts ??= {};
     this.state.current ??= {};
+    if (!this.state.broker_selected)
+      for (const record of Object.values(this.state.accounts) as Row[])
+        if (record.auto) record.auto.enabled = false;
     this.account = this.state.current[this.state.broker] ?? null;
     this.feed = this.newFeed();
   }
@@ -339,6 +342,7 @@ export class IndiaTrading {
     );
   }
   private get broker(): brokers.IndiaBroker {
+    if (!this.state.broker_selected) return requireBroker();
     return this.state.broker;
   }
   private get record(): Row | null {
@@ -361,9 +365,9 @@ export class IndiaTrading {
       }
     );
   }
-  private save() {
+  private save(selectionChanged = false) {
     store.save(indiaTradingFile, this.state);
-    this.changed();
+    this.changed(selectionChanged);
   }
   private log(message: string) {
     if (!this.record) return;
@@ -386,46 +390,56 @@ export class IndiaTrading {
     );
   }
   view(): Row {
-    const record = this.record;
+    const broker = this.state.broker_selected
+      ? (this.state.broker as brokers.IndiaBroker)
+      : null;
+    const record = broker ? this.record : null;
     const connections = brokers.connections();
-    const connected = connections.find((b) => b.id === this.broker)?.connected;
+    const connected = connections.find((b) => b.id === broker)?.connected;
     const marketPhase = phase(Date.now(), "NSE");
     const configured = record?.configured === true;
     const signals = this.feed.snapshot();
-    const waiting = this.error
+    const waiting = !broker
       ? {
-          phase: "error",
+          phase: "not_selected",
           message:
-            "Broker refresh failed. Resolve the broker error, then refresh the account.",
+            "Choose your India broker account for trading and long-term investments.",
         }
-      : !connected
+      : this.error
         ? {
-            phase: "not_connected",
-            message: `Connect ${brokers.names[this.broker]} in Account settings to load India trading data.`,
+            phase: "error",
+            message:
+              "Broker refresh failed. Resolve the broker error, then refresh the account.",
           }
-        : !configured
+        : !connected
           ? {
-              phase: "not_configured",
-              message:
-                "Save this account’s India budget and watchlist to start monitoring.",
+              phase: "not_connected",
+              message: `Connect ${broker ? brokers.names[broker] : "your broker"} in Account settings to load India trading data.`,
             }
-          : marketPhase !== "Market open"
+          : !configured
             ? {
-                phase: "market_closed",
+                phase: "not_configured",
                 message:
-                  "NSE market closed. Intraday scans wait for regular exchange hours.",
+                  "Save this account’s India budget and watchlist to start monitoring.",
               }
-            : signals.scan?.phase === "idle"
+            : marketPhase !== "Market open"
               ? {
-                  phase: "idle",
+                  phase: "market_closed",
                   message:
-                    "Ready to monitor. Refresh the account or start automatic trading to load signals.",
+                    "NSE market closed. Intraday scans wait for regular exchange hours.",
                 }
-              : null;
+              : signals.scan?.phase === "idle"
+                ? {
+                    phase: "idle",
+                    message:
+                      "Ready to monitor. Refresh the account or start automatic trading to load signals.",
+                  }
+                : null;
     return {
-      broker: this.broker,
+      broker,
       brokers: connections,
-      scope: this.account,
+      investment_scope: investmentScope(),
+      scope: broker ? this.account : null,
       configured,
       settings: this.settings,
       auto: record?.auto ?? { enabled: false },
@@ -458,18 +472,37 @@ export class IndiaTrading {
       );
   }
   select(broker: brokers.IndiaBroker): Promise<Row> {
-    return this.lock.run(() => {
-      this.idle();
-      this.state.broker = broker;
-      this.account = this.state.current[broker] ?? null;
-      this.snapshot = null;
-      this.actions = [];
-      this.feed = this.newFeed();
-      this.lastFeed = 0;
-      this.error = null;
-      this.save();
-      return this.view();
-    });
+    return submitLock.run(() =>
+      this.lock.run(() => {
+        if (selectedBroker() === broker) return this.view();
+        if (!(
+          selectedBroker() === null &&
+          this.state.broker === broker &&
+          !this.enabled
+        ))
+          this.idle();
+        if (
+          Object.values(batches()).some(
+            (b) =>
+              unresolved(b) &&
+              !(selectedBroker() === null && (b.broker ?? "kite") === broker),
+          )
+        )
+          throw new Error(
+            "Reconcile pending investment orders before changing your India broker account.",
+          );
+        this.state.broker = broker;
+        this.state.broker_selected = true;
+        this.account = this.state.current[broker] ?? null;
+        this.snapshot = null;
+        this.actions = [];
+        this.feed = this.newFeed();
+        this.lastFeed = 0;
+        this.error = null;
+        this.save(true);
+        return this.view();
+      }),
+    );
   }
   connect(
     broker: Exclude<brokers.IndiaBroker, "kite">,
@@ -480,7 +513,7 @@ export class IndiaTrading {
       const result = await brokers.connect(broker, token);
       this.snapshot = null;
       this.actions = [];
-      this.changed();
+      this.changed(true);
       return result;
     });
   }
@@ -515,8 +548,9 @@ export class IndiaTrading {
       throw new Error("India automatic trading consent expired.");
   }
   private async read(): Promise<void> {
+    const broker = this.broker;
     const data = await this.sources.snapshot(
-      this.broker,
+      broker,
       this.feed.snapshot().ranked.map((p) => p.symbol),
     );
     const account = scope(this.broker + ":" + data.user);
@@ -530,7 +564,8 @@ export class IndiaTrading {
       );
       throw new Error("India broker account changed.");
     }
-    if (this.account !== account) {
+    const accountChanged = this.account !== account;
+    if (accountChanged) {
       this.account = account;
       this.snapshot = null;
       this.actions = [];
@@ -610,7 +645,7 @@ export class IndiaTrading {
       this.record!.tickets,
     );
     this.error = null;
-    this.save();
+    this.save(accountChanged);
   }
   private refreshFeed() {
     if (

@@ -1,3 +1,4 @@
+import type { IndiaLive } from "./india-trading";
 import { useEffect, useRef, useState } from "react";
 import { useAction, useData, runJob } from "./api";
 import { Badge, Card, Empty, Failure, Notice, Table } from "./components";
@@ -38,8 +39,11 @@ export function WeeklyDashboard() {
   const accounts = useData<Accounts>("accounts", "/accounts");
   const portfolios = useData<Portfolios>("portfolios", "/portfolios");
   const live = useData<Live>("live", "/live");
+  const india = useData<IndiaLive>(["india-trading"], "/india/trading");
   const scope =
-    role === "India" ? "India" : accounts.data?.roles[role]?.scope || "local";
+    role === "India"
+      ? (india.data?.investment_scope ?? "unselected")
+      : accounts.data?.roles[role]?.scope || "local";
   const report = useData<WeeklyEvents | null>(
     ["weekly", role, scope],
     `/weekly/${role}`,

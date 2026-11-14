@@ -2,9 +2,11 @@ import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { store, type Row } from "../src/shared/storage.js";
 import { tokenFile, journal, submit, connect } from "../src/brokers/kite.js";
+import { indiaTradingFile } from "../src/brokers/india-selection.js";
 import { localDay } from "../src/shared/calendar.js";
 function setup(mode: "filled" | "unknown" | "rejected" | "pending" = "filled") {
   const saved = new Map<string, Row>([
+    [indiaTradingFile, { broker: "kite", broker_selected: true }],
     [
       tokenFile,
       { date: localDay(Date.now(), "NSE"), access_token: "fake-token" },

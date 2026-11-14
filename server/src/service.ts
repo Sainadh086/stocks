@@ -14,6 +14,12 @@ import {
 import * as accounts from "./brokers/accounts.js";
 import * as robinhood from "./brokers/robinhood.js";
 import * as kite from "./brokers/kite.js";
+import { investingState } from "./brokers/india.js";
+import {
+  requireBroker,
+  selectedBroker,
+  investmentScope,
+} from "./brokers/india-selection.js";
 import * as analysis from "./analysis.js";
 import {
   DailyMarkets,
@@ -73,9 +79,15 @@ export class Service {
   private readonly analysisLock = new Mutex();
   private readonly daily = new DailyMarkets();
   private readonly feed = new Feed();
-  readonly india = new IndiaTrading(() => {
+  readonly india = new IndiaTrading((selectionChanged = false) => {
     this.preventSleep();
     this.publishLive("india-trading");
+    if (selectionChanged) {
+      this.publishLive("portfolios");
+      this.publishLive("comparisons");
+      this.publishLive("weekly");
+      this.publishLive("kite-batches");
+    }
   });
   private indiaWork: Promise<void> | null = null;
   private lastIndia = 0;
@@ -479,7 +491,9 @@ export class Service {
     const scoped = {
       ...result,
       scope:
-        role === "India" ? "India" : accounts.scope(accounts.roles()[role]),
+        role === "India"
+          ? investmentScope()
+          : accounts.scope(accounts.roles()[role]),
       positions: held.rows,
     };
     this.state.weeklies ??= {};
@@ -1329,11 +1343,12 @@ export class Service {
   ): Promise<Row> {
     return this.lock.run(async () => {
       const plan = indiaPlan(strategy, selected, exits),
-        account = await kite.state(),
+        account = await investingState(),
         draft = {
           id: randomUUID(),
           rows: kite.editorRows(plan.view, account),
           user: account.user,
+          broker: account.broker,
         };
       const prices = await kite.quotes(
         draft.rows.map((r) => r.exchange + ":" + r.symbol),
@@ -1343,6 +1358,11 @@ export class Service {
         row.price_inr = quote.last_price;
         row.price_as_of = quote.quoted_at;
       }
+      if (
+        selectedBroker() !== draft.broker ||
+        investmentScope() !== accounts.scope(draft.broker + ":" + draft.user)
+      )
+        throw new Error("Broker changed. Open a new draft.");
       this.state.india_draft = draft;
       this.save();
       return draft;
@@ -1353,9 +1373,11 @@ export class Service {
       const draft = this.state.india_draft;
       if (!draft || draft.id !== id)
         throw new Error("Rebalance draft changed. Open a new draft.");
-      const current = await kite.state();
-      if (current.user !== draft.user)
-        throw new Error("Connected Kite account changed.");
+      if (requireBroker() !== draft.broker)
+        throw new Error("Broker changed. Open a new draft.");
+      const current = await investingState();
+      if (current.user !== draft.user || current.broker !== draft.broker)
+        throw new Error("Connected broker account changed.");
       const original: Row[] = draft.rows,
         edited = rows.map((r) => {
           const saved = original.find(
@@ -1364,7 +1386,10 @@ export class Service {
           if (!saved) throw new Error("Stock list changed.");
           return { ...r, current_shares: saved.current_shares };
         });
-      return kite.review(edited, original);
+      return kite.review(edited, original, {
+        broker: draft.broker,
+        user: draft.user,
+      });
     });
   }
   private async tick() {

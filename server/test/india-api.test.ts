@@ -26,6 +26,7 @@ test("India trading routes preserve local authentication, strict inputs and expl
       url: "/api/india/trading",
     });
     assert.equal(response.statusCode, 200);
+    assert.equal(response.json().broker, null);
     assert.deepEqual(
       response.json().brokers.map((b: Row) => b.id),
       ["kite", "upstox", "groww"],

@@ -20,7 +20,12 @@ import {
   learningAdvisor,
   researchLearningContext,
 } from "./learning.js";
-import * as kite from "./brokers/kite.js";
+import { investingState } from "./brokers/india.js";
+import {
+  requireBroker,
+  investmentDir,
+  investmentScope,
+} from "./brokers/india-selection.js";
 const frame = (dir: string, prefix: string) => {
   const path = latest(dir, prefix);
   return path ? store.csv(path) : [];
@@ -46,8 +51,9 @@ export const gemsRows = (market: "India" | "US"): Row[] => {
     );
 };
 export const indiaHistory = (): Row[] =>
-  store.json<Row>(join(INDIA, "portfolio_history.json"), { snapshots: [] })
-    .snapshots;
+  store.json<Row>(join(investmentDir(), "portfolio_history.json"), {
+    snapshots: [],
+  }).snapshots;
 export const indiaSnapshot = (): Row => indiaHistory().at(-1) ?? {};
 export function holdings(): Row[] {
   const combined = new Map<string, number | null>();
@@ -94,13 +100,14 @@ export function portfolios(): Row {
   const result: Row = {};
   try {
     const snapshot = indiaSnapshot(),
-      weekly = latest(INDIA, "weekly_review_");
+      weekly = latest(investmentDir(), "weekly_review_");
     result.india = {
+      scope: investmentScope(),
       holdings: snapshot.holdings ?? [],
       as_of: snapshot.date,
       ranked: frame(INDIA, "nifty_midsmallcap_400_momentum_ranked_"),
-      replacements: frame(INDIA, "zerodha_potential_replacements_"),
-      plan: frame(INDIA, "zerodha_target_plan_"),
+      replacements: frame(investmentDir(), "zerodha_potential_replacements_"),
+      plan: frame(investmentDir(), "zerodha_target_plan_"),
       history: indiaHistory(),
       weekly: weekly ? store.read(weekly) : null,
       gems: gemsRows("India"),
@@ -316,7 +323,7 @@ export async function refreshGems(market: "India" | "US"): Promise<Row> {
   };
 }
 export async function refreshAnalysis(market: "India" | "US"): Promise<Row> {
-  const account = market === "India" ? await kite.state() : null,
+  const account = market === "India" ? await investingState() : null,
     accountNumber = market === "US" ? roles().long_term : null,
     symbols = await universe(market),
     ranked = (
@@ -515,13 +522,19 @@ async function saveIndiaAnalysis(
   day: string,
   date: string,
 ): Promise<void> {
+  const accountScope = scope(account.broker + ":" + account.user);
+  if (requireBroker() !== account.broker || investmentScope() !== accountScope)
+    throw new Error(
+      "India broker account changed during analysis. Refresh for the selected account.",
+    );
+  const dir = investmentDir();
   for (const strategy of ["momentum", "weekend_style", "naked_style"])
     rememberLearning(
       {
         market: "India",
         horizon: "long_term",
-        broker: "kite",
-        scope: scope("kite:" + account.user),
+        broker: account.broker,
+        scope: scope(account.broker + ":" + account.user),
       },
       strategy,
       ranked,
@@ -695,7 +708,13 @@ async function saveIndiaAnalysis(
       portfolio_value_inr: Math.round(total * 100) / 100,
     });
   }
+  if (requireBroker() !== account.broker || investmentScope() !== accountScope)
+    throw new Error(
+      "India broker account changed during analysis. Refresh for the selected account.",
+    );
   const snapshot = {
+    scope: accountScope,
+    broker: account.broker,
     date: day,
     as_of: new Date().toISOString(),
     holdings: report,
@@ -706,16 +725,16 @@ async function saveIndiaAnalysis(
   };
   const snapshots = indiaHistory().filter((s) => s.date !== day);
   snapshots.push(snapshot);
-  store.save(join(INDIA, "portfolio_history.json"), {
+  store.save(join(dir, "portfolio_history.json"), {
     snapshots: snapshots.slice(-500),
   });
   store.saveCsv(
     join(INDIA, `nifty_midsmallcap_400_momentum_ranked_${date}.csv`),
     ranked,
   );
-  store.saveCsv(join(INDIA, `zerodha_portfolio_momentum_${date}.csv`), report);
+  store.saveCsv(join(dir, `zerodha_portfolio_momentum_${date}.csv`), report);
   store.saveCsv(
-    join(INDIA, `zerodha_potential_replacements_${date}.csv`),
+    join(dir, `zerodha_potential_replacements_${date}.csv`),
     replacements,
   );
   store.saveCsv(join(INDIA, `fundamentals_audit_${date}.csv`), audit);
@@ -735,14 +754,14 @@ async function saveIndiaAnalysis(
       });
     }
   }
-  store.saveCsv(join(INDIA, `zerodha_target_plan_${date}.csv`), plan);
+  store.saveCsv(join(dir, `zerodha_target_plan_${date}.csv`), plan);
   store.write(
-    join(INDIA, "portfolio_memory.md"),
+    join(dir, "portfolio_memory.md"),
     `# Portfolio review · ${day}\n\n${report.map((r) => `${r.symbol}: ${r.portfolio_plan} — ${r.plan_reason}`).join("\n")}`,
   );
   if (new Date(day).getUTCDay() === 5)
     store.write(
-      join(INDIA, `weekly_review_${date}.md`),
+      join(dir, `weekly_review_${date}.md`),
       `# Weekly review · ${day}\n\nHoldings: ${report.length}. Review concentration, business quality, taxes and costs before executing any proposed changes.\n\n${report.map((r) => `${r.symbol}: ${r.action}; ${r.plan_reason}`).join("\n")}`,
     );
 }

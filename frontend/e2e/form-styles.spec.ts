@@ -27,7 +27,7 @@ test("Botanical selectors match text fields across recommendations, trading and 
         india: { holdings: [], gems: [] },
         us: { holdings: [], gems: [], picks: [] },
       };
-    if (path === "/api/kite/batches") data = [];
+    if (path === "/api/india/investing/batches") data = [];
     if (path === "/api/india/trading")
       data = {
         broker: "kite",

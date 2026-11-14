@@ -31,12 +31,14 @@ class Socket {
 vi.stubGlobal("WebSocket", Socket);
 let saved: Comparison | null = null;
 let failComparison = false;
+let indiaBroker: string | null = null;
 const calls: { path: string; body: unknown }[] = [];
 beforeEach(() => {
   queryClient.clear();
   localStorage.clear();
   saved = null;
   failComparison = false;
+  indiaBroker = null;
   calls.length = 0;
   vi.stubGlobal(
     "fetch",
@@ -208,7 +210,31 @@ beforeEach(() => {
           status: "completed",
           result: { candidates: 1 },
         };
-      if (path === "/api/kite/batches") value = [];
+      if (path === "/api/india/investing/batches") value = [];
+      if (path === "/api/india/trading")
+        value = {
+          broker: indiaBroker,
+          configured: false,
+          settings: { budget: 100000, reserve_pct: 10, symbols: ["INFY"] },
+          snapshot: null,
+          actions: [],
+          history: [],
+          error: null,
+          phase: "Market closed",
+          signals: { message: "Choose your broker account", asof: null },
+          brokers: [
+            { id: "kite", name: "Zerodha Kite", connected: true, ending: null },
+            { id: "groww", name: "Groww", connected: true, ending: "••••1234" },
+          ],
+          scope: null,
+          investment_scope: null,
+          auto: { enabled: false },
+          tickets: [],
+        };
+      if (path === "/api/india/broker" && init?.method === "POST") {
+        indiaBroker = (body as { broker: string }).broker;
+        value = { id: "selection", status: "completed", result: {} };
+      }
       return new Response(JSON.stringify(value), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -419,4 +445,33 @@ describe("order confirmation and tables", () => {
       expect(screen.queryByText("XYZ")).not.toBeInTheDocument(),
     );
   });
+});
+
+it("shares the chosen broker across investing, holdings and India trading without sending orders", async () => {
+  mount();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Recommendations" }),
+  );
+  const picker = await screen.findByRole("combobox", {
+    name: "India broker account",
+  });
+  await waitFor(() => expect(picker).toBeEnabled());
+  expect(picker).toHaveValue("");
+  fireEvent.change(picker, { target: { value: "groww" } });
+  await waitFor(() => expect(picker).toHaveValue("groww"));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Holdings" }),
+  );
+  expect(
+    await screen.findByRole("combobox", { name: "India broker account" }),
+  ).toHaveValue("groww");
+  fireEvent.click(
+    screen.getByRole("button", { name: "India trading" }),
+  );
+  expect(
+    await screen.findByRole("combobox", { name: "Trading broker" }),
+  ).toHaveValue("groww");
+  expect(calls.filter((c) => c.body !== undefined)).toEqual([
+    { path: "/api/india/broker", body: { broker: "groww" } },
+  ]);
 });

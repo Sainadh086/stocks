@@ -95,6 +95,7 @@ function setup(
             price: 1000,
             status: "preview",
           };
+        if (path === "/api/india/broker") data.broker = body.broker;
         if (path.endsWith("/automation")) data.auto.enabled = body.enabled;
         if (path.endsWith("/connect")) value = { connected: true };
         result = { id: "job", status: "completed", result: value };
@@ -337,4 +338,33 @@ it("shows a failed status request with retry instead of an endless loading notic
   ).toBeEnabled();
   expect(screen.queryByText("Loading India trading…")).not.toBeInTheDocument();
   expect(screen.getByText("India status is unavailable")).toBeVisible();
+});
+
+it("requires an explicit choice even with connected brokers and saves it for trading and investing", async () => {
+  const f = setup(false, false, {
+    broker: null,
+    scope: null,
+    configured: false,
+    snapshot: null,
+    actions: [],
+  });
+  const picker = await screen.findByRole("combobox", {
+    name: "Trading broker",
+  });
+  expect(picker).toHaveValue("");
+  expect(
+    screen.getByRole("option", { name: "Choose a broker account" }),
+  ).toBeVisible();
+  expect(
+    screen.getByText(/Used for all India trades and long-term investments/),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Save India trading settings" }),
+  ).toBeDisabled();
+  expect(f.calls).toEqual([]);
+  fireEvent.change(picker, { target: { value: "groww" } });
+  await waitFor(() => expect(picker).toHaveValue("groww"));
+  expect(f.calls).toEqual([
+    { path: "/api/india/broker", body: { broker: "groww" } },
+  ]);
 });

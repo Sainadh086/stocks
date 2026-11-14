@@ -88,6 +88,7 @@ export function useAction<T, V = void>(
     "india-trading",
     "paper",
     "comparisons",
+    "weekly",
     "kite-batches",
     "gems-plan",
     "learning",

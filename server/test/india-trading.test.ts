@@ -170,7 +170,8 @@ test("India status shows setup and broker errors without starting unconfigured s
     },
   );
   try {
-    assert.equal(engine.view().signals.scan.phase, "not_connected");
+    assert.equal(engine.view().broker, null);
+    assert.equal(engine.view().signals.scan.phase, "not_selected");
     f.records.set(credentialsFile, {
       groww: { access_token: "test", user: "IND123", day },
     });

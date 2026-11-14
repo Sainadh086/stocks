@@ -10,6 +10,8 @@ import {
 import { localDay } from "../shared/calendar.js";
 import { history, concurrent } from "../shared/prices.js";
 import { recordLearningOrders, learningScope } from "../learning.js";
+import * as brokers from "./india.js";
+import { requireBroker, selectedBroker } from "./india-selection.js";
 export const tokenFile = join(INDIA, "kite_access_token.json"),
   journal = join(INDIA, "kite_rebalances.json");
 export class KiteError extends Error {}
@@ -62,9 +64,21 @@ export async function connect(value: string): Promise<Row> {
         false,
       );
     if (!data.access_token) throw new Error("Kite returned no access token.");
+    if (
+      Object.values(batches()).some(
+        (b) =>
+          (b.broker ?? "kite") === "kite" &&
+          unresolved(b) &&
+          b.user !== data.user_id,
+      )
+    )
+      throw new Error(
+        "Reconcile pending investment orders before connecting a different account.",
+      );
     store.save(tokenFile, {
       date: localDay(Date.now(), "NSE"),
       access_token: data.access_token,
+      user: data.user_id,
     });
     return { connected: true };
   });
@@ -117,6 +131,14 @@ export async function state(): Promise<Row> {
   ]);
   if (!Number.isFinite(Number(margins.net)))
     throw new Error("Kite equity funds are unavailable.");
+  if (typeof profile.user_id !== "string" || !profile.user_id)
+    throw new Error("Broker account identity is unavailable.");
+  const token = store.json<Row>(tokenFile, {});
+  if (token.user && token.user !== profile.user_id)
+    throw new Error(
+      "Connected Kite account changed. Reconnect from Account settings.",
+    );
+  if (!token.user) store.save(tokenFile, { ...token, user: profile.user_id });
   recordLearningOrders(
     {
       market: "India",
@@ -274,12 +296,27 @@ export async function buyMargin(orders: Row[]): Promise<number> {
     return n + total + charges;
   }, 0);
 }
+export const unresolved = (batch: Row): boolean =>
+  ["submitting", "unknown"].includes(batch.status) ||
+  batch.results?.some((r: Row) =>
+    ["submitting", "unknown", "submitted", "pending"].includes(r.status),
+  ) === true;
 export const batches = (): Record<string, Row> => store.json(journal, {});
 const save = (batch: Row) =>
   store.save(journal, { ...batches(), [batch.id]: batch });
-export async function review(edited: Row[], original: Row[]): Promise<Row> {
-  const orders = ordersFromEditor(edited, original),
-    account = await state();
+export async function review(
+  edited: Row[],
+  original: Row[],
+  expected?: { broker: string; user: string },
+): Promise<Row> {
+  const broker = requireBroker(),
+    orders = ordersFromEditor(edited, original),
+    account = await brokers.investingState(broker);
+  if (
+    expected &&
+    (expected.broker !== broker || expected.user !== account.user)
+  )
+    throw new Error("Broker account changed. Open a new draft.");
   validateHoldings(orders, account);
   const prices = await quotes(
     orders.map((o) => o.exchange + ":" + o.tradingsymbol),
@@ -292,12 +329,15 @@ export async function review(edited: Row[], original: Row[]): Promise<Row> {
     if (o.transaction_type === "SELL") sells += v;
     else buys += v;
   }
-  const margin = await buyMargin(orders);
+  const margin = await brokers.deliveryMargin(broker, orders);
+  if (selectedBroker() !== broker)
+    throw new Error("Broker changed. Open a new rebalance.");
   if (margin > account.funds + sells * 0.99)
     throw new Error("Edited buys exceed funds plus estimated sale proceeds.");
   const batch = {
     id: randomUUID().replaceAll("-", ""),
     user: account.user,
+    broker,
     orders,
     status: "review",
     results: [],
@@ -316,7 +356,7 @@ export async function review(edited: Row[], original: Row[]): Promise<Row> {
   save(batch);
   return batch;
 }
-const submitLock = new Mutex();
+export const submitLock = new Mutex();
 export async function submit(id: string, acknowledged: boolean): Promise<Row> {
   return submitLock.run(async () => {
     if (acknowledged !== true)
@@ -325,18 +365,25 @@ export async function submit(id: string, acknowledged: boolean): Promise<Row> {
       batch = all[id];
     if (!batch || batch.status !== "review")
       throw new Error("Rebalance missing or already confirmed.");
+    const broker = requireBroker();
+    if ((batch.broker ?? "kite") !== broker)
+      throw new Error(
+        "Broker changed. Open a new rebalance for the selected account.",
+      );
     const age = Date.now() - Date.parse(batch.reviewed_at);
     if (age < 0 || age > 120000) throw new Error("Rebalance review expired.");
     if (
       Object.values(all).some(
         (b) =>
-          b.user === batch.user && ["submitting", "unknown"].includes(b.status),
+          b.user === batch.user &&
+          (b.broker ?? "kite") === broker &&
+          unresolved(b),
       )
     )
       throw new Error("An earlier rebalance is unresolved.");
-    const account = await state();
-    if (account.user !== batch.user)
-      throw new Error("Connected Kite account changed.");
+    const account = await brokers.investingState(broker);
+    if (account.user !== batch.user || selectedBroker() !== broker)
+      throw new Error("Selected broker account changed.");
     validateHoldings(batch.orders, account);
     batch.status = "submitting";
     save(batch);
@@ -345,12 +392,17 @@ export async function submit(id: string, acknowledged: boolean): Promise<Row> {
       let started = false;
       try {
         if (o.transaction_type === "BUY") {
-          const needed = await buyMargin(batch.orders.slice(i)),
-            margins = await request("/user/margins/equity");
+          const needed = await brokers.deliveryMargin(
+              broker,
+              batch.orders.slice(i),
+            ),
+            margins = await brokers.investingState(broker);
+          if (margins.user !== batch.user)
+            throw new Error("Connected broker account changed.");
           if (
-            !Number.isFinite(Number(margins.net)) ||
-            Number(margins.net) < 0 ||
-            needed > Number(margins.net)
+            !Number.isFinite(Number(margins.funds)) ||
+            Number(margins.funds) < 0 ||
+            needed > Number(margins.funds)
           )
             throw new Error(
               "Fresh available funds cannot cover remaining buys.",
@@ -366,22 +418,36 @@ export async function submit(id: string, acknowledged: boolean): Promise<Row> {
         batch.results.push(result);
         save(batch);
         started = true;
-        const receipt = await request("/orders/regular", "POST", {
-          ...o,
-          market_protection: -1,
-          tag: result.tag,
-        });
-        if (!receipt.order_id)
-          throw new Error("Kite returned no order identifier.");
-        result.order_id = String(receipt.order_id);
+        if (selectedBroker() !== broker)
+          throw new Error("Selected broker changed.");
+        result.order_id = await brokers.place(
+          broker,
+          {
+            exchange: o.exchange,
+            symbol: o.tradingsymbol,
+            side: o.transaction_type.toLowerCase(),
+            quantity: o.quantity,
+          },
+          result.tag,
+          true,
+        );
         result.status = "submitted";
         save(batch);
         let status: string | undefined;
         for (let attempt = 0; attempt < 5; attempt++) {
-          const h: Row[] = await request(
-            "/orders/" + encodeURIComponent(result.order_id),
-          );
-          status = h.at(-1)?.status;
+          if (broker === "kite") {
+            const h: Row[] = await request(
+              "/orders/" + encodeURIComponent(result.order_id),
+            );
+            status = h.at(-1)?.status;
+          } else {
+            const current = await brokers.investingState(broker);
+            if (current.user !== batch.user)
+              throw new Error("Connected broker account changed.");
+            status = current.orders.find(
+              (o: Row) => o.order_id === result.order_id,
+            )?.status;
+          }
           if (status && terminal.has(status)) break;
           if (attempt < 4) await new Promise((r) => setTimeout(r, 1000));
         }
@@ -405,8 +471,13 @@ export async function submit(id: string, acknowledged: boolean): Promise<Row> {
       } catch (error) {
         const last = batch.results.at(-1);
         if (started && !last.order_id) {
-          last.status = error instanceof KiteError ? "rejected" : "unknown";
-          batch.status = error instanceof KiteError ? "stopped" : "unknown";
+          const rejected =
+            error instanceof KiteError ||
+            (error instanceof brokers.IndiaBrokerError &&
+              error.status >= 400 &&
+              error.status < 500);
+          last.status = rejected ? "rejected" : "unknown";
+          batch.status = rejected ? "stopped" : "unknown";
         } else batch.status = "stopped";
         batch.error = errorMessage(error);
         save(batch);
@@ -421,9 +492,15 @@ export async function submit(id: string, acknowledged: boolean): Promise<Row> {
 export async function refreshStatus(id: string): Promise<Row> {
   const batch = batches()[id];
   if (!batch) throw new Error("Rebalance record missing.");
-  if ((await request("/user/profile")).user_id !== batch.user)
-    throw new Error("Connected Kite account changed.");
-  const orders: Row[] = await request("/orders");
+  const broker = batch.broker ?? "kite";
+  if (requireBroker() !== broker)
+    throw new Error(
+      "Select the original broker account to check these orders.",
+    );
+  const account = await brokers.investingState(broker);
+  if (account.user !== batch.user)
+    throw new Error("Connected broker account changed.");
+  const orders: Row[] = account.orders;
   for (const r of batch.results) {
     const match = orders.find(
       (o) => o.order_id === r.order_id || (r.tag && o.tag === r.tag),

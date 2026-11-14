@@ -518,7 +518,16 @@ test.beforeEach(async ({ page }) => {
         tickets: [],
       };
     if (path === "/api/paper") data = null;
-    if (path === "/api/kite/batches") data = [];
+    if (path === "/api/india/investing/batches") data = [];
+    if (path === "/api/india/trading")
+      data = {
+        broker: null,
+        brokers: [],
+        scope: null,
+        investment_scope: null,
+        auto: { enabled: false },
+        tickets: [],
+      };
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify(data),

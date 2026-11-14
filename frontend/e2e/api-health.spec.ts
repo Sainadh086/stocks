@@ -25,7 +25,15 @@ test("API health detects a timeout and recovers, including on mobile", async ({
         india: { holdings: [], gems: [] },
         us: { holdings: [], gems: [], picks: [] },
       },
-      "/api/kite/batches": [],
+      "/api/india/investing/batches": [],
+      "/api/india/trading": {
+        broker: null,
+        brokers: [],
+        scope: null,
+        investment_scope: null,
+        auto: { enabled: false },
+        tickets: [],
+      },
     };
     await route.fulfill({ json: fixtures[path] ?? {} });
   });

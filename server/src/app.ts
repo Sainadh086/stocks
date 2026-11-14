@@ -22,6 +22,8 @@ import { MacBiometrics, type BiometricVerifier } from "./biometrics.js";
 import type { ServerOptions } from "node:https";
 import * as kite from "./brokers/kite.js";
 import { brokerIds } from "./brokers/india.js";
+import { selectedBroker, investmentScope } from "./brokers/india-selection.js";
+import { scope } from "./brokers/accounts.js";
 import {
   learningView,
   refreshLearning,
@@ -303,6 +305,10 @@ export async function createApp(
   app.get("/api/bootstrap", () => ({ token, name: "varshan" }));
   app.get("/api/accounts", () => service.accountState());
   app.get("/api/india/trading", () => service.india.view());
+  app.post("/api/india/broker", (request) => {
+    const p = strict({ broker: z.enum(brokerIds) }).parse(request.body);
+    return service.job("india-broker", () => service.india.select(p.broker));
+  });
   app.post("/api/india/trading/broker", (request) => {
     const p = strict({ broker: z.enum(brokerIds) }).parse(request.body);
     return service.job("india-broker", () => service.india.select(p.broker));
@@ -637,37 +643,47 @@ export async function createApp(
     const p = plan.parse(request.body);
     return service.indiaRecommendation(p.strategy, p.selected, p.exits);
   });
-  app.post("/api/kite/draft", (request) => {
-    const p = plan.parse(request.body);
-    return service.job("kite-draft", () =>
-      service.kiteDraft(p.strategy, p.selected, p.exits),
-    );
-  });
-  app.post("/api/kite/review", (request) => {
-    const p = strict({ id: z.string(), rows: z.array(editor).max(100) }).parse(
-      request.body,
-    );
-    return service.job("kite-review", () => service.kiteReview(p.id, p.rows));
-  });
-  app.get("/api/kite/batches", () =>
-    Object.values(kite.batches()).slice(-20).reverse(),
-  );
-  app.post<{ Params: { id: string } }>(
-    "/api/kite/batches/:id/confirm",
-    (request) => {
-      const p = confirm.parse(request.body);
-      return service.job("kite-confirm-" + request.params.id, () =>
-        kite.submit(request.params.id, p.acknowledged),
+  for (const base of ["/api/india/investing", "/api/kite"]) {
+    app.post(`${base}/draft`, (request) => {
+      const p = plan.parse(request.body);
+      return service.job("kite-draft", () =>
+        service.kiteDraft(p.strategy, p.selected, p.exits),
       );
-    },
-  );
-  app.post<{ Params: { id: string } }>(
-    "/api/kite/batches/:id/status",
-    (request) =>
-      service.job("kite-status-" + request.params.id, () =>
-        kite.refreshStatus(request.params.id),
-      ),
-  );
+    });
+    app.post(`${base}/review`, (request) => {
+      const p = strict({
+        id: z.string(),
+        rows: z.array(editor).max(100),
+      }).parse(request.body);
+      return service.job("kite-review", () => service.kiteReview(p.id, p.rows));
+    });
+    app.get(`${base}/batches`, () =>
+      Object.values(kite.batches())
+        .filter(
+          (b) =>
+            (b.broker ?? "kite") === selectedBroker() &&
+            scope((b.broker ?? "kite") + ":" + b.user) === investmentScope(),
+        )
+        .slice(-20)
+        .reverse(),
+    );
+    app.post<{ Params: { id: string } }>(
+      `${base}/batches/:id/confirm`,
+      (request) => {
+        const p = confirm.parse(request.body);
+        return service.job("kite-confirm-" + request.params.id, () =>
+          kite.submit(request.params.id, p.acknowledged),
+        );
+      },
+    );
+    app.post<{ Params: { id: string } }>(
+      `${base}/batches/:id/status`,
+      (request) =>
+        service.job("kite-status-" + request.params.id, () =>
+          kite.refreshStatus(request.params.id),
+        ),
+    );
+  }
   app.get("/api/stream", { websocket: true }, (socket, request) => {
     if (
       !allowedOrigin(
