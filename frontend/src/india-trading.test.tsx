@@ -17,6 +17,7 @@ import {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  localStorage.clear();
 });
 function setup(
   pending = false,
@@ -34,7 +35,18 @@ function setup(
     ],
     scope: "india-one",
     configured: true,
+    indices: [
+      "Nifty 50",
+      "Nifty Next 50",
+      "Nifty 100",
+      "Nifty 200",
+      "Nifty 500",
+      "Nifty Bank",
+      "Nifty IT",
+    ],
+    settings_revision: 0,
     settings: {
+      selection_mode: "manual",
       budget: 100000,
       reserve_pct: 10,
       symbols: ["INFY", "RELIANCE"],
@@ -96,6 +108,26 @@ function setup(
             status: "preview",
           };
         if (path === "/api/india/broker") data.broker = body.broker;
+        if (path.endsWith("/settings")) {
+          if (body.expected_revision !== (data.settings_revision ?? 0))
+            return new Response(
+              JSON.stringify({
+                id: "conflict",
+                status: "failed",
+                error:
+                  "Trading settings changed in another window. Reload saved settings before saving again.",
+              }),
+            );
+          const {
+            expected_revision,
+            expected_broker,
+            expected_scope,
+            ...settings
+          } = body;
+          data.settings = settings;
+          data.settings_revision = (data.settings_revision ?? 0) + 1;
+          data.settings_saved_at = new Date().toISOString();
+        }
         if (path.endsWith("/automation")) data.auto.enabled = body.enabled;
         if (path.endsWith("/connect")) value = { connected: true };
         result = { id: "job", status: "completed", result: value };
@@ -106,12 +138,12 @@ function setup(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       {connections ? <IndiaBrokerConnections /> : <IndiaTrading />}
     </QueryClientProvider>,
   );
-  return { calls, data, reads };
+  return { calls, data, reads, client, ...rendered };
 }
 
 it("shows the dedicated India controls, all three brokers and INR budget without submitting on render", async () => {
@@ -212,7 +244,16 @@ it("saves INR settings with normalized NSE symbols", async () => {
   await waitFor(() =>
     expect(f.calls).toContainEqual({
       path: "/api/india/trading/settings",
-      body: { budget: 50000, reserve_pct: 10, symbols: ["INFY", "RELIANCE"] },
+      body: {
+        budget: 50000,
+        reserve_pct: 10,
+        symbols: ["INFY", "RELIANCE"],
+        selection_mode: "manual",
+        index: "Nifty 100",
+        expected_revision: 0,
+        expected_broker: "groww",
+        expected_scope: "india-one",
+      },
     }),
   );
 });
@@ -368,3 +409,240 @@ it("requires an explicit choice even with connected brokers and saves it for tra
     { path: "/api/india/broker", body: { broker: "groww" } },
   ]);
 });
+
+it("automatic selection needs no tickers, exposes the shortlist and saves the mode without enabling trading", async () => {
+  const f = setup(false, false, {
+    settings: {
+      budget: 100000,
+      reserve_pct: 10,
+      symbols: [],
+      selection_mode: "automatic",
+    },
+    signals: {
+      message: "Monitoring confirmed breakouts",
+      asof: null,
+      shortlist: [
+        {
+          symbol: "TATAMOTORS",
+          relative_volume: 2,
+          rotation_score: 0.8,
+          baseline_sessions: 20,
+        },
+      ],
+    },
+    actions: [],
+  });
+  expect(
+    await screen.findByRole("combobox", { name: "Stock selection" }),
+  ).toHaveValue("automatic");
+  expect(
+    screen.queryByRole("textbox", { name: /NSE watchlist/ }),
+  ).not.toBeInTheDocument();
+  expect(
+    await screen.findByRole("table", { name: "India shortlisted stocks" }),
+  ).toHaveTextContent("TATAMOTORS");
+  expect(f.calls).toEqual([]);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save India trading settings" }),
+  );
+  await waitFor(() =>
+    expect(f.calls).toEqual([
+      {
+        path: "/api/india/trading/settings",
+        body: {
+          budget: 100000,
+          reserve_pct: 10,
+          symbols: [],
+          selection_mode: "automatic",
+          index: "Nifty 100",
+          expected_revision: 0,
+          expected_broker: "groww",
+          expected_scope: "india-one",
+        },
+      },
+    ]),
+  );
+  fireEvent.change(screen.getByRole("combobox", { name: "Stock selection" }), {
+    target: { value: "manual" },
+  });
+  expect(screen.getByRole("textbox", { name: /NSE watchlist/ })).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Save India trading settings" }),
+  ).toBeDisabled();
+});
+
+it("persists a confirmed budget and chosen index through broker refreshes and remounts", async () => {
+  const f = setup(false, false, {
+    settings: {
+      budget: 100000,
+      reserve_pct: 10,
+      symbols: [],
+      selection_mode: "automatic",
+      index: "Nifty 100",
+    },
+  });
+  const budget = await screen.findByRole("spinbutton", { name: "Budget (₹)" });
+  fireEvent.change(budget, { target: { value: "25000" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Trading index" }), {
+    target: { value: "Nifty Bank" },
+  });
+  expect(
+    screen.getByRole("button", { name: "Start India automatic trading" }),
+  ).toBeDisabled();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save India trading settings" }),
+  );
+  await screen.findByText(/Saved locally:/);
+  expect(budget).toHaveValue(25000);
+  expect(f.data.settings.index).toBe("Nifty Bank");
+  expect(
+    localStorage.getItem("india-trading-draft:groww:india-one"),
+  ).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Refresh account & broker status" }),
+  );
+  await waitFor(() =>
+    expect(f.calls.some((c) => c.path.endsWith("/refresh"))).toBe(true),
+  );
+  expect(budget).toHaveValue(25000);
+  f.unmount();
+  setup(false, false, f.data);
+  expect(
+    await screen.findByRole("spinbutton", { name: "Budget (₹)" }),
+  ).toHaveValue(25000);
+  expect(screen.getByRole("combobox", { name: "Trading index" })).toHaveValue(
+    "Nifty Bank",
+  );
+});
+
+it("restores unsaved edits after refresh without treating them as confirmed trading limits", async () => {
+  const f = setup();
+  fireEvent.change(
+    await screen.findByRole("spinbutton", { name: "Budget (₹)" }),
+    { target: { value: "37500" } },
+  );
+  await act(() => f.client.invalidateQueries({ queryKey: ["india-trading"] }));
+  expect(screen.getByRole("spinbutton", { name: "Budget (₹)" })).toHaveValue(
+    37500,
+  );
+  f.unmount();
+  const next = setup();
+  expect(
+    await screen.findByRole("spinbutton", { name: "Budget (₹)" }),
+  ).toHaveValue(37500);
+  expect(next.data.settings.budget).toBe(100000);
+  expect(
+    screen.getByRole("button", { name: "Start India automatic trading" }),
+  ).toBeDisabled();
+  expect(next.calls).toEqual([]);
+});
+
+it("updates clean forms from saved settings and rejects an older window's budget edits", async () => {
+  const f = setup();
+  await screen.findByRole("spinbutton", { name: "Budget (₹)" });
+  await act(() =>
+    f.client.setQueryData(["india-trading"], {
+      ...f.data,
+      settings: { ...f.data.settings, budget: 42000 },
+      settings_revision: 1,
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("spinbutton", { name: "Budget (₹)" })).toHaveValue(
+      42000,
+    ),
+  );
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Budget (₹)" }), {
+    target: { value: "50000" },
+  });
+  f.data.settings.budget = 75000;
+  f.data.settings_revision = 2;
+  await act(() =>
+    f.client.setQueryData(["india-trading"], structuredClone(f.data)),
+  );
+  expect(screen.getByRole("spinbutton", { name: "Budget (₹)" })).toHaveValue(
+    50000,
+  );
+  expect(
+    await screen.findByText(/Saved settings changed in another window/),
+  ).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save India trading settings" }),
+  );
+  await screen.findByText(/Trading settings changed in another window/);
+  expect(f.data.settings.budget).toBe(75000);
+  expect(
+    screen.getByRole("button", { name: "Start India automatic trading" }),
+  ).toBeDisabled();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Reload saved settings" }),
+  );
+  expect(screen.getByRole("spinbutton", { name: "Budget (₹)" })).toHaveValue(
+    75000,
+  );
+});
+
+it("buys the clicked India shortlist stock through the selected account preview and confirmation", async () => {
+  const f = setup(false, false, {
+    signals: {
+      message: "Ready",
+      asof: new Date().toISOString(),
+      fresh: true,
+      shortlist: [{ symbol: "INFY", relative_volume: 2 }],
+    },
+  });
+  const table = await screen.findByRole("table", {
+    name: "India shortlisted stocks",
+  });
+  fireEvent.click(within(table).getByRole("button", { name: "Buy INFY" }));
+  const dialog = await screen.findByRole("dialog", {
+    name: "Confirm India BUY INFY",
+  });
+  expect(f.calls).toEqual([
+    {
+      path: "/api/india/trading/preview",
+      body: {
+        symbol: "INFY",
+        side: "buy",
+        expected_scope: "india-one",
+        expected_revision: 0,
+        expected_broker: "groww",
+      },
+    },
+  ]);
+  const confirm = within(dialog).getByRole("button", {
+    name: "Confirm real orders",
+  });
+  expect(confirm).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole("checkbox"));
+  fireEvent.click(confirm);
+  await waitFor(() =>
+    expect(f.calls.map((c) => c.path)).toEqual([
+      "/api/india/trading/preview",
+      "/api/india/trading/orders/reviewed/confirm",
+    ]),
+  );
+});
+
+it.each(["cached", "automatic", "pending", "ineligible"])(
+  "blocks a %s India shortlist buy",
+  async (state) => {
+    const f = setup(state === "pending", false, {
+      signals: {
+        message: "Ready",
+        asof: new Date().toISOString(),
+        fresh: state !== "cached",
+        shortlist: [{ symbol: "INFY" }],
+      },
+      ...(state === "automatic" ? { auto: { enabled: true } } : {}),
+      ...(state === "ineligible" ? { actions: [] } : {}),
+    });
+    const table = await screen.findByRole("table", {
+      name: "India shortlisted stocks",
+    });
+    const button = within(table).getByRole("button", { name: "Buy INFY" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(f.calls).toEqual([]);
+  },
+);

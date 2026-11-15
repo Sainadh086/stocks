@@ -35,6 +35,7 @@ test("Botanical selectors match text fields across recommendations, trading and 
         scope: "fixture",
         configured: false,
         settings: {
+          selection_mode: "manual",
           budget: 100000,
           reserve_pct: 10,
           symbols: ["RELIANCE", "INFY"],

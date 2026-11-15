@@ -677,3 +677,62 @@ test("background automation survives browser disconnect, binds its account and r
     mock.restoreAll();
   }
 });
+
+test("US shortlist previews accept one symbol and account scope, reject client order amounts, and keep legacy rebalance previews", async () => {
+  const { service } = isolatedService(),
+    app = await createApp(service);
+  const calls: unknown[] = [];
+  mock.method(service, "previewLive", async (...args: unknown[]) => {
+    calls.push(args);
+    return {};
+  });
+  try {
+    const token = (
+      await app.inject({ ...options, url: "/api/bootstrap" })
+    ).json().token;
+    const headers = { ...options.headers, "x-varshan-token": token };
+    const url = "/api/live/preview";
+    assert.equal(
+      (
+        await app.inject({
+          ...options,
+          url,
+          method: "POST",
+          payload: { symbol: "BBB" },
+        })
+      ).statusCode,
+      403,
+    );
+    for (const payload of [
+      { symbol: "BBB", dollar_amount: 999999 },
+      { symbol: "BBB", side: "sell" },
+      { symbol: "bad/symbol" },
+      { symbol: "BBB", expected_scope: "wrong" },
+    ])
+      assert.equal(
+        (await app.inject({ url, headers, method: "POST", payload }))
+          .statusCode,
+        422,
+      );
+    assert.equal(calls.length, 0);
+    const chosen = await app.inject({
+      url,
+      headers,
+      method: "POST",
+      payload: { symbol: "BBB", expected_scope: "a".repeat(20) },
+    });
+    assert.equal(chosen.statusCode, 200);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls, [["BBB", "a".repeat(20)]]);
+    assert.equal(
+      (await app.inject({ url, headers, method: "POST", payload: {} }))
+        .statusCode,
+      200,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls[1], [undefined, undefined]);
+  } finally {
+    await app.close();
+    mock.restoreAll();
+  }
+});

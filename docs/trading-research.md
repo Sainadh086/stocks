@@ -94,3 +94,19 @@ Targets are for a dedicated allocation and do not subtract existing holdings or
 record completed investments. Compare them with actual holdings before acting.
 The plan and reviews are research records; they do not call a broker, place
 orders, enable automation or reuse intraday consent.
+
+
+## India automatic stock selection
+
+India intraday trading uses the current [NSE Nifty 100 constituent list](https://www.nseindia.com/static/products-services/indices-nifty100-index) as its default discovery universe. This is a large-cap universe choice, not an assertion that all members are liquid at every moment or approved for intraday orders by every broker. The constituent list is refreshed each NSE date and must contain a plausible full set of EQ symbols; invalid downloads do not fall back to investment-research stocks or a static list.
+
+The app reuses the US `Feed` and rotating watchlist with NSE hours. It requires a complete 15-minute opening range, at least ten prior opening-volume observations, and opening relative volume of at least 1.5. The scanner ranks current breakout strength and relative volume, maintains at most four candidates, rotates waiting stocks after one minute, and monitors held/pending symbols separately. Confirmed completed-candle breakouts, VWAP/EMA confirmation, recent broker quotes, a maximum 0.5% spread when quotes include depth, anti-chasing checks and cost-adjusted reward/risk are still required before a buy. These thresholds are app heuristics, not validated return predictions. The relevance of price, volume, volatility and liquidity is discussed by [Upstox](https://upstox.com/learning-center/intraday-trading/price-volume-volatility-and-liquidity-in-intraday-trading/article-1941/); individual brokers can still reject restricted stocks.
+
+Stock selection and order consent are separate: saving the mode or scanning cannot place an order. Manual mode retains per-order previews; automatic execution requires explicit India session consent. Whole-share quantities, account budget/reserve, four-position cap, 0.25% planned budget risk per trade, 1% daily loss halt and India's existing entry/exit cutoffs remain enforced. A failed initial history scan retries instead of caching an empty universe for the day. No live profitability or execution guarantee has been established by this change.
+
+
+## Local India settings and index data
+
+The default discovery index is Nifty 100, with selectable Nifty 50, Nifty Next 50, Nifty 200, Nifty 500, Nifty Bank and Nifty IT universes. All use NSE's EQ constituent files and the same entry/risk rules. Constituents are saved locally per index and NSE date; same-day downloads can be reused after restart, while stale or malformed lists block new entries until refreshed. Broader universes take longer to scan.
+
+Trading limits are account-bound, saved independently of broker network availability once the account identity has been verified, and acknowledged only after the encrypted local write succeeds. Each save increments a revision; requests naming an older revision, broker or account are rejected. A failed settings write restores the previous in-memory limits. The UI restores confirmed limits from the server, preserves account-scoped browser drafts separately, and prevents those drafts from starting or reviewing trades. Cached account and shortlist summaries are for display; execution always reads the broker again and pending/uncertain orders remain blocked until reconciled. Credentials are never stored in browser drafts.

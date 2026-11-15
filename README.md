@@ -147,6 +147,49 @@ POST `/api/analysis/India/gems` or `/api/analysis/US/gems` runs the same scan.
 
 ## Trading controls
 
+Both India and US live trading show a **Buy SYMBOL** action beside shortlisted
+stocks. It opens a review for that stock only, sized from the saved account
+budget and risk limits. The order requires final explicit confirmation; previewing
+never submits it. Pause automatic trading first. Disabled buttons explain unmet
+entry checks, stale data, pending orders or unsaved settings. A US buy dependent
+on sale proceeds requires the existing full-rebalance review; row buys cannot
+silently submit unrelated sells or spend estimated future proceeds. The broker,
+account and strategy are checked again at preview and confirmation.
+
+
+India trading defaults to automatic stock selection from **Nifty 100**.
+Choose a trading index: **Nifty 50**, **Nifty Next 50**, **Nifty 100**,
+**Nifty 200**, **Nifty 500**, **Nifty Bank** or **Nifty IT**. Save the
+selected broker account's budget and reserve; no stock names are required.
+The app downloads the chosen index's NSE equity constituents once per exchange
+day and uses the shared US scanner to build a rotating shortlist of up to four
+stocks. A completed 15-minute opening range, at least 10 baseline sessions and
+1.5x relative opening volume produce candidates. Confirmed breakouts, VWAP/EMA,
+fresh broker prices, spread, costs, budget and risk checks still gate orders.
+The shortlist and waiting reasons appear in India trading. No qualifying stock
+means no new buy. A missing/invalid index list or stale scan blocks entries and
+is retried; existing managed exits retain their separate checks. A custom NSE
+watchlist remains available. Saving or scanning never enables automatic orders;
+start a separately confirmed trading session to execute through the chosen broker.
+
+**Save India trading settings** confirms the budget, reserve, index and watchlist
+on the local server, with a saved time and revision. These account-specific
+settings survive page refreshes, browser closure and server restarts. An already
+verified account can save limits even when its broker API is unavailable. The
+form shows the confirmed amount separately from editable values and never starts
+trades with unsaved changes. Older windows cannot overwrite a newer revision.
+
+Confirmed settings, risk state, order references/receipts, managed stop/target
+levels, pending-order state, history and the last account/shortlist summaries are
+stored encrypted in `india_stocks/live_intraday_trading.json`. Constituent lists
+are cached by index and NSE date in encrypted
+`india_stocks/trading_index_constituents.json`; stale lists are not used for new
+entries when the next day's download fails. Browser-local drafts preserve edits
+for the same account and saved revision, but never authorize orders. Cached
+snapshots are labelled with their time and restored as display-only data. Orders
+still require fresh broker checks, current signals and explicit trading consent.
+
+
 Live US and India buys now require net target reward at least equal to net risk
 after estimated costs, plus positive target reward when estimated costs double.
 Observed spreads can increase the estimate; the same costs enter risk sizing.
@@ -220,8 +263,17 @@ average true range. The target is 2R. After a post-entry completed candle closes
 at +1R, protection moves to break-even and trails the two-candle low without
 loosening. Original risk metadata is retained across top-ups; protection is
 reconstructed from post-entry completed candles after restart. The target does
-not move closer as the stop tightens. Stops are software-monitored while the
-app and trading session are active, not resting broker stop orders; outages,
+not move closer as the stop tightens.
+
+After an interruption or restart, existing US holdings retain their saved
+stop and target and are reassessed against current broker data, even if bought
+in an earlier session. Age, missing metadata and restarting alone do not cause
+a sale. Holdings without usable levels wait for current analysis; known stops,
+targets, the daily loss halt, closing exits and qualified replacements still
+apply. Failed retries without fills cannot replace a successful entry's risk
+levels. Pending or uncertain orders continue to block new submissions.
+
+Stops are software-monitored while the app and trading session are active, not resting broker stop orders; outages,
 price gaps and execution costs can make actual losses exceed the planned cap.
 A 1% decline from the first valid session equity snapshot persists a daily halt,
 blocks entries, and triggers exits even if entry signals are stale. Equity

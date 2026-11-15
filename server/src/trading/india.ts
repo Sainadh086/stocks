@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { store, Mutex, errorMessage, type Row } from "../shared/storage.js";
 import { localDay, session, phase } from "../shared/calendar.js";
 import { history } from "../shared/prices.js";
+import { indiaTradingUniverse } from "../analysis.js";
 import { scope, validateBudget } from "../brokers/accounts.js";
 import * as brokers from "../brokers/india.js";
 import { Feed, amount, type Signals } from "./live.js";
@@ -33,10 +34,16 @@ export const defaultSymbols = [
   "ITC",
   "LT",
 ];
+import {
+  indiaTradingIndexNames,
+  type IndiaTradingIndex,
+} from "./india-indices.js";
 export interface IndiaSettings {
   budget: number;
   reserve_pct: number;
   symbols: string[];
+  selection_mode?: "automatic" | "manual";
+  index?: IndiaTradingIndex;
 }
 const pendingStatuses = new Set(["submitting", "unknown", "submitted"]);
 function quoteReady(q: Row | undefined, now: number) {
@@ -310,7 +317,13 @@ export class IndiaTrading {
   private stopped = false;
   constructor(
     private readonly changed = (_selectionChanged = false) => {},
-    private readonly sources = {
+    private readonly sources: {
+      snapshot: typeof brokers.snapshot;
+      place: typeof brokers.place;
+      cancel: typeof brokers.cancel;
+      history: typeof history;
+      universe?: (index: IndiaTradingIndex) => Promise<string[]>;
+    } = {
       snapshot: brokers.snapshot,
       place: brokers.place,
       cancel: brokers.cancel,
@@ -335,7 +348,12 @@ export class IndiaTrading {
       {
         history: (symbol, ...args) =>
           this.sources.history(symbol + ".NS", ...args),
-        universe: async () => this.settings.symbols,
+        universe: async () =>
+          this.settings.selection_mode === "manual"
+            ? this.settings.symbols
+            : (this.sources.universe ?? indiaTradingUniverse)(
+                this.settings.index ?? "Nifty 100",
+              ),
         now: Date.now,
       },
       "NSE",
@@ -357,13 +375,17 @@ export class IndiaTrading {
     );
   }
   private get settings(): IndiaSettings {
-    return (
-      this.record?.settings ?? {
-        budget: 100000,
-        reserve_pct: 10,
-        symbols: defaultSymbols,
-      }
-    );
+    return this.settingsFor(this.record);
+  }
+  private settingsFor(record: Row | null): IndiaSettings {
+    const saved = record?.settings;
+    return {
+      budget: saved?.budget ?? 100000,
+      reserve_pct: saved?.reserve_pct ?? 10,
+      symbols: saved?.symbols ?? defaultSymbols,
+      selection_mode: saved?.selection_mode ?? "automatic",
+      index: saved?.index ?? "Nifty 100",
+    };
   }
   private save(selectionChanged = false) {
     store.save(indiaTradingFile, this.state);
@@ -393,12 +415,19 @@ export class IndiaTrading {
     const broker = this.state.broker_selected
       ? (this.state.broker as brokers.IndiaBroker)
       : null;
-    const record = broker ? this.record : null;
+    const account = broker ? (investmentScope(broker) ?? this.account) : null;
+    const record = account ? (this.state.accounts[account] ?? null) : null;
     const connections = brokers.connections();
     const connected = connections.find((b) => b.id === broker)?.connected;
     const marketPhase = phase(Date.now(), "NSE");
     const configured = record?.configured === true;
-    const signals = this.feed.snapshot();
+    const currentSignals = this.feed.snapshot();
+    const signals =
+      account === this.account
+        ? currentSignals
+        : { ...currentSignals, fresh: false, ranked: [], asof: null };
+    const currentSnapshot = account === this.account ? this.snapshot : null;
+    const snapshot = currentSnapshot ?? record?.last_snapshot ?? null;
     const waiting = !broker
       ? {
           phase: "not_selected",
@@ -420,7 +449,7 @@ export class IndiaTrading {
             ? {
                 phase: "not_configured",
                 message:
-                  "Save this account’s India budget and watchlist to start monitoring.",
+                  "Save this account’s India budget and stock selection to start monitoring.",
               }
             : marketPhase !== "Market open"
               ? {
@@ -438,22 +467,33 @@ export class IndiaTrading {
     return {
       broker,
       brokers: connections,
+      indices: indiaTradingIndexNames,
       investment_scope: investmentScope(),
-      scope: broker ? this.account : null,
+      scope: account,
       configured,
-      settings: this.settings,
+      settings: this.settingsFor(record),
+      settings_revision: record?.settings_revision ?? 0,
+      settings_saved_at: record?.settings_saved_at ?? null,
       auto: record?.auto ?? { enabled: false },
       phase: marketPhase,
-      snapshot: this.snapshot
-        ? { ...this.snapshot, user: "••••" + this.snapshot.user.slice(-4) }
+      snapshot: snapshot
+        ? {
+            ...snapshot,
+            cached: !currentSnapshot,
+            user: "••••" + String(snapshot.user).slice(-4),
+          }
         : null,
-      actions: this.actions,
+      actions: currentSnapshot ? this.actions : [],
       signals: {
         message: waiting?.message ?? signals.message,
         scan: waiting
           ? { phase: waiting.phase, completed: 0, total: 0 }
           : signals.scan,
-        asof: signals.asof,
+        asof: signals.asof ?? record?.last_scan?.asof ?? null,
+        shortlist: signals.asof
+          ? signals.ranked
+          : (record?.last_scan?.shortlist ?? []),
+        fresh: signals.fresh,
       },
       tickets: (record?.tickets ?? []).slice(-100).reverse(),
       history: (record?.history ?? []).slice(-100).reverse(),
@@ -499,6 +539,8 @@ export class IndiaTrading {
         this.feed = this.newFeed();
         this.lastFeed = 0;
         this.error = null;
+        const account = investmentScope(broker);
+        if (account) this.bindAccount(account);
         this.save(true);
         return this.view();
       }),
@@ -511,30 +553,85 @@ export class IndiaTrading {
     return this.lock.run(async () => {
       this.idle();
       const result = await brokers.connect(broker, token);
+      if (broker === this.broker) {
+        const account = investmentScope(broker);
+        if (account) this.bindAccount(account);
+      }
       this.snapshot = null;
       this.actions = [];
-      this.changed(true);
+      this.save(true);
       return result;
     });
   }
-  configure(settings: IndiaSettings): Promise<Row> {
+  configure(
+    settings: IndiaSettings,
+    expected: {
+      revision?: number;
+      scope?: string;
+      broker?: brokers.IndiaBroker;
+    } = {},
+  ): Promise<Row> {
     return this.lock.run(async () => {
       this.idle();
       validateBudget(settings.budget, settings.reserve_pct);
+      if (expected.broker && expected.broker !== this.broker)
+        throw new Error(
+          "Broker selection changed. Reload the selected account before saving.",
+        );
+      if (!indiaTradingIndexNames.includes(settings.index ?? "Nifty 100"))
+        throw new Error("Choose a supported India trading index.");
       if (
-        !settings.symbols.length ||
+        !["automatic", "manual"].includes(
+          settings.selection_mode ?? "automatic",
+        ) ||
+        ((settings.selection_mode ?? "automatic") === "manual" &&
+          !settings.symbols.length) ||
         settings.symbols.length > 20 ||
         new Set(settings.symbols).size !== settings.symbols.length ||
         settings.symbols.some((s) => !/^[A-Z0-9][A-Z0-9&.\-]{0,29}$/.test(s))
       )
-        throw new Error("Choose 1–20 distinct NSE equity symbols.");
-      await this.read();
-      this.record!.settings = settings;
-      this.record!.configured = true;
+        throw new Error(
+          "Choose automatic selection or a custom watchlist of 1–20 distinct NSE equity symbols.",
+        );
+      const verifiedAccount = investmentScope(this.broker);
+      if (verifiedAccount) this.bindAccount(verifiedAccount);
+      else await this.read();
+      if (expected.scope && expected.scope !== this.account)
+        throw new Error(
+          "Broker account changed. Reload its saved settings before saving.",
+        );
+      if (
+        expected.revision != null &&
+        expected.revision !== (this.record!.settings_revision ?? 0)
+      )
+        throw new Error(
+          "Trading settings changed in another window. Reload saved settings before saving again.",
+        );
+      const record = this.record!;
+      const previous = {
+        settings: record.settings,
+        configured: record.configured,
+        settings_revision: record.settings_revision,
+        settings_saved_at: record.settings_saved_at,
+      };
+      record.settings = {
+        ...settings,
+        selection_mode: settings.selection_mode ?? "automatic",
+        index: settings.index ?? "Nifty 100",
+      };
+      record.configured = true;
+      record.settings_revision = (record.settings_revision ?? 0) + 1;
+      record.settings_saved_at = new Date().toISOString();
+      try {
+        this.save();
+      } catch (error) {
+        Object.assign(record, previous);
+        throw error;
+      }
       this.feed = this.newFeed();
       this.lastFeed = 0;
       this.actions = [];
-      this.save();
+      if (this.settings.selection_mode === "automatic") this.refreshFeed();
       return this.view();
     });
   }
@@ -547,13 +644,7 @@ export class IndiaTrading {
     )
       throw new Error("India automatic trading consent expired.");
   }
-  private async read(): Promise<void> {
-    const broker = this.broker;
-    const data = await this.sources.snapshot(
-      broker,
-      this.feed.snapshot().ranked.map((p) => p.symbol),
-    );
-    const account = scope(this.broker + ":" + data.user);
+  private bindAccount(account: string): boolean {
     if (
       this.account &&
       this.account !== account &&
@@ -578,12 +669,30 @@ export class IndiaTrading {
         budget: 100000,
         reserve_pct: 10,
         symbols: [...defaultSymbols],
+        selection_mode: "automatic",
       },
       auto: { enabled: false },
       tickets: [],
       history: [],
     };
+    return accountChanged;
+  }
+  private async read(): Promise<void> {
+    const broker = this.broker;
+    const data = await this.sources.snapshot(
+      broker,
+      this.feed.snapshot().ranked.map((p) => p.symbol),
+    );
+    const account = scope(this.broker + ":" + data.user);
+    const accountChanged = this.bindAccount(account);
     this.snapshot = data;
+    this.record!.last_snapshot = {
+      user: data.user,
+      cash: data.cash,
+      positions: data.positions,
+      quotes: data.quotes,
+      updated_at: data.updated_at,
+    };
     recordLearningOrders(
       {
         market: "India",
@@ -655,7 +764,9 @@ export class IndiaTrading {
     )
       return;
     this.lastFeed = Date.now();
-    this.feedWork = this.feed
+    const feed = this.feed,
+      account = this.account;
+    this.feedWork = feed
       .refresh(
         this.snapshot?.positions
           .filter((p) => p.quantity > 0)
@@ -665,8 +776,23 @@ export class IndiaTrading {
           .filter((t: Row) => pendingStatuses.has(t.status))
           .map((t: Row) => t.symbol),
       )
+      .then((signals) => {
+        if (
+          this.account === account &&
+          this.feed === feed &&
+          this.record &&
+          signals.fresh
+        ) {
+          this.record.last_scan = {
+            asof: signals.asof,
+            shortlist: signals.ranked,
+          };
+          this.save();
+        }
+      })
       .catch((error) => {
-        this.error = errorMessage(error);
+        if (this.account === account && this.feed === feed)
+          this.error = errorMessage(error);
       })
       .finally(() => {
         this.feedWork = null;
@@ -689,7 +815,7 @@ export class IndiaTrading {
   private makeTicket(action: Row, automatic: boolean): Row {
     if (!this.record?.configured)
       throw new Error(
-        "Save this account's India budget and watchlist before reviewing trades.",
+        "Save this account's India budget and stock selection before reviewing trades.",
       );
     const observation = marketObservation(
       this.feed.snapshot().bars[action.symbol],
@@ -721,10 +847,33 @@ export class IndiaTrading {
     this.save();
     return ticket;
   }
-  preview(symbol: string, side: string): Promise<Row> {
+  preview(
+    symbol: string,
+    side: string,
+    expected: {
+      scope?: string;
+      revision?: number;
+      broker?: brokers.IndiaBroker;
+    } = {},
+  ): Promise<Row> {
     return this.lock.run(async () => {
       this.idle();
+      if (expected.broker && expected.broker !== this.broker)
+        throw new Error(
+          "The selected India broker changed. Refresh before buying.",
+        );
       await this.read();
+      if (expected.scope && expected.scope !== this.account)
+        throw new Error(
+          "The selected India account changed. Refresh before buying.",
+        );
+      if (
+        expected.revision != null &&
+        expected.revision !== (this.record?.settings_revision ?? 0)
+      )
+        throw new Error(
+          "Trading settings changed. Reload the saved limits before buying.",
+        );
       this.refreshFeed();
       const action = this.actions.find(
         (a) => a.symbol === symbol && a.side === side && a.enabled,
@@ -850,7 +999,7 @@ export class IndiaTrading {
       await this.read();
       if (!this.record!.configured)
         throw new Error(
-          "Save the India budget and watchlist before starting automation.",
+          "Save the India budget and stock selection before starting automation.",
         );
       const hours = session(localDay(Date.now(), "NSE"), "NSE");
       if (

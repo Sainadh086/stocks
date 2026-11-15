@@ -835,6 +835,7 @@ export class Service {
     automatic = false,
     broker = this.broker,
     current?: { signals: ReturnType<Feed["snapshot"]> },
+    buySymbol?: string,
   ): Promise<Row> {
     const { signals } =
         current ??
@@ -851,7 +852,27 @@ export class Service {
         settings.reserve_pct,
         robinhood.listTickets(number),
       ),
-      actions = eligibleActions(plan);
+      actions = eligibleActions(plan).filter(
+        (a) =>
+          !buySymbol ||
+          (a.symbol === buySymbol && a.side === "buy" && !a.after_sell_fills),
+      );
+    if (
+      buySymbol &&
+      (!signals.fresh || !signals.ranked.some((p) => p.symbol === buySymbol))
+    )
+      throw new Error(
+        "This stock is not on the current US trading shortlist. Refresh the shortlist first.",
+      );
+    if (buySymbol && !actions.length) {
+      const decision = plan.actions.find((a: Row) => a.symbol === buySymbol);
+      throw new Error(
+        decision?.after_sell_fills
+          ? "This buy depends on confirmed sales. Review the full rebalance first."
+          : (decision?.reason ??
+              "This shortlisted stock is not currently eligible to buy."),
+      );
+    }
     if (!actions.length)
       throw new Error("No eligible buys or sells at this time.");
     if (new Set(actions.map((a) => a.symbol)).size !== actions.length)
@@ -862,6 +883,7 @@ export class Service {
       ticket_ids: [],
       status: "preview",
       automatic,
+      ...(buySymbol ? { buy_symbol: buySymbol } : {}),
     };
     for (const a of actions) {
       this.consent(batch);
@@ -908,11 +930,18 @@ export class Service {
     this.save();
     return batch;
   }
-  previewLive(): Promise<Row> {
+  previewLive(symbol?: string, expectedScope?: string): Promise<Row> {
     return this.lock.run(async () => {
       this.idle();
+      if (
+        expectedScope &&
+        expectedScope !== accounts.scope(accounts.roles().trading)
+      )
+        throw new Error(
+          "The selected US trading account changed. Refresh before buying.",
+        );
       await this.broker(async (s) =>
-        this.prepare(false, async (action) => action(s)),
+        this.prepare(false, async (action) => action(s), undefined, symbol),
       );
       return this.liveView();
     });
@@ -925,6 +954,22 @@ export class Service {
   ) {
     const field =
       ticket.arguments.side === "buy" ? "dollar_amount" : "quantity";
+    if (
+      batch.buy_symbol &&
+      !this.feed.snapshot().ranked.some((p) => p.symbol === batch.buy_symbol)
+    )
+      throw new TradeDecisionChanged(
+        "The selected stock is no longer shortlisted. Review a new order.",
+      );
+    if (
+      batch.buy_symbol &&
+      (ticket.arguments.side !== "buy" ||
+        ticket.arguments.symbol !== batch.buy_symbol ||
+        action?.after_sell_fills)
+    )
+      throw new TradeDecisionChanged(
+        "The selected buy no longer qualifies independently. Review a new order.",
+      );
     if (!action?.enabled)
       throw new TradeDecisionChanged(
         `${ticket.arguments.symbol}: ${action?.reason ?? "Strategy trade no longer qualifies."}`,

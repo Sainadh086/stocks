@@ -21,6 +21,7 @@ import { PhoneVerification } from "./phone-verification.js";
 import { MacBiometrics, type BiometricVerifier } from "./biometrics.js";
 import type { ServerOptions } from "node:https";
 import * as kite from "./brokers/kite.js";
+import { indiaTradingIndexNames } from "./trading/india-indices.js";
 import { brokerIds } from "./brokers/india.js";
 import { selectedBroker, investmentScope } from "./brokers/india-selection.js";
 import { scope } from "./brokers/accounts.js";
@@ -325,12 +326,30 @@ export async function createApp(
   app.post("/api/india/trading/settings", (request) => {
     const p = strict({
       ...budget,
+      selection_mode: z.enum(["automatic", "manual"]).default("automatic"),
+      index: z.enum(indiaTradingIndexNames).default("Nifty 100"),
+      expected_revision: z.number().int().nonnegative().optional(),
+      expected_scope: z
+        .string()
+        .regex(/^[a-f0-9]{20}$/)
+        .optional(),
+      expected_broker: z.enum(brokerIds).optional(),
       symbols: z
         .array(z.string().regex(/^[A-Z0-9][A-Z0-9&.\-]{0,29}$/))
-        .min(1)
-        .max(20),
+        .max(20)
+        .default([]),
     }).parse(request.body);
-    return service.job("india-settings", () => service.india.configure(p));
+    const { expected_revision, expected_scope, expected_broker, ...settings } =
+      p;
+    return service.job(
+      "india-settings-" + randomBytes(12).toString("hex"),
+      () =>
+        service.india.configure(settings, {
+          revision: expected_revision,
+          scope: expected_scope,
+          broker: expected_broker,
+        }),
+    );
   });
   app.post("/api/india/trading/refresh", (request) => {
     strict({}).parse(request.body);
@@ -340,9 +359,21 @@ export async function createApp(
     const p = strict({
       symbol: z.string().regex(/^[A-Z0-9][A-Z0-9&.\-]{0,29}$/),
       side: z.enum(["buy", "sell"]),
+      expected_scope: z
+        .string()
+        .regex(/^[a-f0-9]{20}$/)
+        .optional(),
+      expected_revision: z.number().int().nonnegative().optional(),
+      expected_broker: z.enum(brokerIds).optional(),
     }).parse(request.body);
-    return service.job("india-preview", () =>
-      service.india.preview(p.symbol, p.side),
+    return service.job(
+      `india-preview:${p.symbol}:${p.side}:${p.expected_scope ?? "current"}`,
+      () =>
+        service.india.preview(p.symbol, p.side, {
+          scope: p.expected_scope,
+          revision: p.expected_revision,
+          broker: p.expected_broker,
+        }),
     );
   });
   app.post<{ Params: { id: string } }>(
@@ -588,9 +619,22 @@ export async function createApp(
     const p = strict(budget).parse(request.body);
     return service.setSettings(p.budget, p.reserve_pct);
   });
-  app.post("/api/live/preview", () =>
-    service.job("live-preview", () => service.previewLive()),
-  );
+  app.post("/api/live/preview", (request) => {
+    const p = strict({
+      symbol: z
+        .string()
+        .regex(/^[A-Z][A-Z0-9.-]{0,14}$/)
+        .optional(),
+      expected_scope: z
+        .string()
+        .regex(/^[a-f0-9]{20}$/)
+        .optional(),
+    }).parse(request.body ?? {});
+    return service.job(
+      `live-preview:${p.symbol ?? "rebalance"}:${p.expected_scope ?? "current"}`,
+      () => service.previewLive(p.symbol, p.expected_scope),
+    );
+  });
   app.post("/api/live/tickets/reconcile", () =>
     service.job("live-reconcile", () => service.reconcileLive()),
   );

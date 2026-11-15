@@ -119,6 +119,21 @@ function LiveTrading({
   const [confirm, setConfirm] = useState<"signal" | "batch" | "auto" | null>(
     null,
   );
+  const [selectedBuy, setSelectedBuy] = useState<{
+    view: Live;
+    symbol: string;
+    scope: string;
+    ending: string;
+  } | null>(null);
+  const buy = useAction((symbol: string) =>
+    runJob<Live>("/live/preview", {
+      symbol,
+      expected_scope: accounts.data?.roles.trading.scope,
+    }),
+  );
+  useEffect(() => {
+    setSelectedBuy(null);
+  }, [scope, active]);
   const prompted = useRef("");
   const refresh = useAction(() => runJob("/live/refresh"));
   const settings = useAction(() =>
@@ -226,6 +241,8 @@ function LiveTrading({
       !automaticPreview &&
       !busy &&
       !confirm &&
+      !selectedBuy &&
+      !buy.isPending &&
       account?.selected &&
       prompted.current !== readyKey
     ) {
@@ -238,6 +255,8 @@ function LiveTrading({
     automaticPreview,
     busy,
     confirm,
+    selectedBuy,
+    buy.isPending,
     account?.selected,
     ready.length,
     readyKey,
@@ -266,7 +285,8 @@ function LiveTrading({
           preview.error ||
           send.error ||
           auto.error ||
-          manual.error
+          manual.error ||
+          buy.error
         }
       />
       {!account?.selected ? (
@@ -465,6 +485,69 @@ function LiveTrading({
                   "reason",
                 ]}
                 name="Live decisions"
+                rowActions={(row) => {
+                  const symbol = String(row.symbol);
+                  const shortlist =
+                    monitor?.watchlist ?? live.data?.model?.shortlist ?? [];
+                  if (!shortlist.some((p) => p.symbol === symbol)) return null;
+                  const saved = accounts.data?.live_settings;
+                  const reason = enabled
+                    ? "Pause automatic trading to buy manually."
+                    : busy
+                      ? "Wait for the current orders to finish."
+                      : monitor?.market_open === false
+                        ? "The US market is closed."
+                        : monitor?.signal_fresh === false
+                          ? "Refresh broker status and the shortlist before buying."
+                          : saved?.budget !== budget ||
+                              saved?.reserve_pct !== reserve
+                            ? "Save your trading budget and reserve first."
+                            : row.after_sell_fills
+                              ? "This buy depends on confirmed sales. Review the full rebalance first."
+                              : row.enabled !== true ||
+                                  row.side !== "buy" ||
+                                  row.action !== "BUY"
+                                ? String(
+                                    row.reason ??
+                                      "Waiting for an eligible buy setup.",
+                                  )
+                                : null;
+                  return (
+                    <div>
+                      <button
+                        disabled={
+                          !!reason ||
+                          buy.isPending ||
+                          preview.isPending ||
+                          manual.isPending ||
+                          auto.isPending
+                        }
+                        onClick={() => {
+                          send.reset();
+                          buy.mutate(symbol, {
+                            onSuccess: (view) => {
+                              setConfirm(null);
+                              setSelectedBuy({
+                                view,
+                                symbol,
+                                scope,
+                                ending:
+                                  account?.ending?.replace(/^•+\s*/, "") ?? "",
+                              });
+                            },
+                          });
+                        }}
+                      >
+                        Buy {symbol}
+                      </button>
+                      {reason && (
+                        <small className="footnote">
+                          <PrivateValue>{reason}</PrivateValue>
+                        </small>
+                      )}
+                    </div>
+                  );
+                }}
               />
             ) : (
               <Empty title="No stock decisions yet">
@@ -522,6 +605,8 @@ function LiveTrading({
               </Notice>
             )}
             <p className="footnote">
+              Buy beside a shortlisted stock opens a review for that stock only;
+              pause automation first. Blocked rows explain what is missing.
               Manual buy / sell is available with automation running or paused.
               It pauses automation and opens a broker preview for eligible
               trades. Confirm the preview to place orders. Automatic trading
@@ -715,6 +800,47 @@ function LiveTrading({
             )}
           </Card>
         </>
+      )}
+      {active && selectedBuy?.scope === scope && selectedBuy.view.batch && (
+        <ConfirmDialog
+          key={selectedBuy.view.batch.id}
+          title={`Confirm US BUY ${selectedBuy.symbol} · •••• ${selectedBuy.ending}`}
+          pending={send.isPending}
+          error={send.error}
+          onClose={() => setSelectedBuy(null)}
+          onConfirm={() =>
+            send.mutate(selectedBuy.view.batch!.id, {
+              onSuccess: () => setSelectedBuy(null),
+            })
+          }
+        >
+          <p>
+            Buy only {selectedBuy.symbol} in the displayed US trading account
+            using the saved budget and risk limits. The backend rechecks price,
+            available funds, eligibility and preview expiry before submission.
+          </p>
+          <Table
+            rows={selectedBuy.view.tickets
+              .filter((ticket) =>
+                selectedBuy.view.batch?.ticket_ids?.includes(String(ticket.id)),
+              )
+              .map((ticket) => ({
+                ...(ticket.arguments as Row),
+                stop: ticket.stop,
+                target: ticket.target,
+                status: ticket.status,
+              }))}
+            columns={[
+              "symbol",
+              "side",
+              "dollar_amount",
+              "stop",
+              "target",
+              "status",
+            ]}
+            name="Selected US buy"
+          />
+        </ConfirmDialog>
       )}
       {confirm === "batch" && batch && !enabled && !batch.automatic && (
         <ConfirmDialog

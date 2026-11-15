@@ -210,7 +210,7 @@ test("a funded weaker holding is replaced only by a qualified stronger candidate
     f.signals.fresh = false;
     assert.equal(
       rebalancePlan(f.snapshot, f.signals, 1000, 10, [], now).actions[0].action,
-      "HOLD",
+      "WAIT",
     );
   } finally {
     mock.restoreAll();

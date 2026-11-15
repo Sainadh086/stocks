@@ -21,7 +21,12 @@ import { ROTATION_STRATEGY } from "../src/trading/rotation.js";
 const day = "2026-11-11",
   hours = session(day, "NSE")!,
   now = hours[0] + 7200000;
-const settings = { budget: 100000, reserve_pct: 10, symbols: ["INFY"] };
+const settings = {
+  budget: 100000,
+  reserve_pct: 10,
+  symbols: ["INFY"],
+  selection_mode: "manual" as const,
+};
 function fixture() {
   mock.timers.enable({ apis: ["Date"], now });
   const records = new Map<string, Row>();
@@ -635,6 +640,208 @@ test("expired previews stay unsent, settings remain account-scoped and graceful 
     await restarted.select("upstox");
     assert.equal(restarted.view().tickets.length, 0);
   } finally {
+    restore();
+  }
+});
+
+function automaticHistory(f: ReturnType<typeof fixture>, relativeVolume = 2) {
+  const bars = f.signals.bars.INFY.map((b) => ({
+    ...b,
+    volume: b.time < hours[0] + 900000 ? 100 * relativeVolume : b.volume,
+  }));
+  for (let i = 1; i <= 25; i++) {
+    const prior = new Date(Date.parse(day) - i * 86400000)
+      .toISOString()
+      .slice(0, 10);
+    const priorHours = session(prior, "NSE");
+    if (!priorHours) continue;
+    bars.push(
+      ...[0, 300000, 600000].map((offset) => ({
+        time: priorHours[0] + offset,
+        date: prior,
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100,
+        volume: 100,
+      })),
+    );
+  }
+  return bars.sort((a, b) => a.time - b.time);
+}
+
+test("automatic India selection scans outside the typed watchlist and trades its shortlist only after separate consent", async () => {
+  const f = fixture();
+  f.records.set(credentialsFile, {
+    groww: { access_token: "fixture", user: "IND123", day },
+  });
+  const calls: string[] = [],
+    quoted: string[][] = [],
+    placed: Row[] = [];
+  let universeReads = 0;
+  const fullBars = automaticHistory(f);
+  const thinBars = automaticHistory(f, 1);
+  f.data.quotes.AUTO = f.data.quotes.INFY;
+  const engine = new IndiaTrading(() => {}, {
+    universe: async () => {
+      universeReads++;
+      return ["AUTO", "THIN"];
+    },
+    history: async (symbol, period) => {
+      calls.push(symbol);
+      assert.ok(["AUTO.NS", "THIN.NS"].includes(symbol));
+      const bars = symbol === "AUTO.NS" ? fullBars : thinBars;
+      return {
+        bars: period === "60d" ? bars : bars.filter((b) => b.date === day),
+        source: "fixture",
+        adjustment: "none",
+      };
+    },
+    snapshot: async (broker, wanted) => {
+      assert.equal(broker, "groww");
+      quoted.push(wanted);
+      return structuredClone(f.data);
+    },
+    place: async (broker, ticket, reference) => {
+      assert.equal(broker, "groww");
+      placed.push(ticket);
+      f.data.orders.push({
+        id: "automatic-order",
+        reference,
+        exchange: "NSE",
+        intraday: true,
+        symbol: ticket.symbol,
+        side: ticket.side,
+        quantity: ticket.quantity,
+        filled_quantity: ticket.quantity,
+        state: "filled",
+        average_price: ticket.price,
+      });
+      return "automatic-order";
+    },
+    cancel: async () => {
+      throw new Error("Unexpected cancellation");
+    },
+  });
+  try {
+    await engine.select("groww");
+    assert.equal(engine.view().settings.selection_mode, "automatic");
+    await engine.configure({
+      ...settings,
+      symbols: ["INFY"],
+      selection_mode: "automatic",
+    });
+    await (engine as any).feedWork;
+    await engine.refresh();
+    await (engine as any).feedWork;
+    assert.equal(universeReads, 1);
+    assert.ok(calls.includes("AUTO.NS"));
+    assert.ok(!calls.includes("INFY.NS"));
+    assert.deepEqual(
+      engine.view().signals.shortlist.map((p: Row) => p.symbol),
+      ["AUTO"],
+    );
+    assert.ok(
+      engine.view().actions.find((a: Row) => a.symbol === "AUTO")?.enabled,
+    );
+    assert.ok(quoted.some((symbols) => symbols.includes("AUTO")));
+    assert.equal(
+      placed.length,
+      0,
+      "scanning and account refresh never place orders",
+    );
+    await assert.rejects(engine.setAuto(true, false), /Explicit consent/);
+    assert.equal(placed.length, 0);
+    await engine.setAuto(true, true);
+    await engine.tick();
+    assert.equal(placed.length, 1);
+    assert.equal(placed[0].symbol, "AUTO");
+    assert.ok(Number.isSafeInteger(placed[0].quantity));
+    assert.ok(placed[0].planned_risk_inr <= settings.budget * 0.0025);
+  } finally {
+    engine.close();
+    restore();
+  }
+});
+
+test("automatic selection accepts no typed stocks; custom mode requires and scans only its saved symbols", async () => {
+  const f = fixture();
+  const calls: string[] = [];
+  let universeReads = 0;
+  const engine = new IndiaTrading(() => {}, {
+    universe: async () => {
+      universeReads++;
+      throw new Error("Index unavailable");
+    },
+    history: async (symbol) => {
+      calls.push(symbol);
+      return { bars: [], source: "fixture", adjustment: "none" };
+    },
+    snapshot: async () => structuredClone(f.data),
+    place: async () => {
+      throw new Error("No orders permitted");
+    },
+    cancel: async () => {},
+  });
+  try {
+    await engine.select("groww");
+    await engine.configure({
+      budget: 100000,
+      reserve_pct: 10,
+      symbols: [],
+      selection_mode: "automatic",
+    });
+    await (engine as any).feedWork;
+    assert.equal(universeReads, 1);
+    assert.equal((engine as any).feed.snapshot().fresh, false);
+    assert.equal(engine.view().actions.filter((a: Row) => a.enabled).length, 0);
+    await assert.rejects(
+      engine.configure({ ...settings, symbols: [], selection_mode: "manual" }),
+      /custom watchlist/,
+    );
+    await engine.configure(settings);
+    await engine.refresh();
+    await (engine as any).feedWork;
+    assert.equal(universeReads, 1);
+    assert.deepEqual(calls, ["INFY.NS"]);
+    assert.equal(new IndiaTrading().view().settings.selection_mode, "manual");
+  } finally {
+    engine.close();
+    restore();
+  }
+});
+
+test("an India shortlist preview is bound to the displayed broker, account and saved limits", async () => {
+  const f = await workflow();
+  try {
+    const expected = {
+      broker: "groww" as const,
+      scope: f.engine.view().scope,
+      revision: f.engine.view().settings_revision,
+    };
+    await assert.rejects(
+      f.engine.preview("INFY", "buy", { ...expected, broker: "upstox" }),
+      /broker changed/,
+    );
+    await assert.rejects(
+      f.engine.preview("INFY", "buy", { ...expected, scope: "0".repeat(20) }),
+      /account changed/,
+    );
+    await assert.rejects(
+      f.engine.preview("INFY", "buy", {
+        ...expected,
+        revision: expected.revision + 1,
+      }),
+      /settings changed/,
+    );
+    assert.equal(f.placements(), 0);
+    assert.equal(f.engine.view().tickets.length, 0);
+    const ticket = await f.engine.preview("INFY", "buy", expected);
+    assert.equal(f.placements(), 0);
+    await f.engine.confirm(ticket.id, true);
+    assert.equal(f.placements(), 1);
+  } finally {
+    f.engine.close();
     restore();
   }
 });

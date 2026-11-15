@@ -225,3 +225,23 @@ test("an old stopped rebalance cannot replace the current market status", () => 
   assert.equal(p.stage, "Market closed");
   assert.doesNotMatch(p.message, /Old validation/);
 });
+
+test("a failed initial history scan is retried instead of leaving an empty daily universe", async () => {
+  let reads = 0;
+  const feed = new Feed({
+    now: () => now,
+    universe: async (market) => {
+      assert.equal(market, "US");
+      return ["A"];
+    },
+    history: async () => {
+      reads++;
+      throw new Error("history unavailable");
+    },
+  });
+  await feed.refresh([], now);
+  assert.equal(feed.snapshot(now).fresh, false);
+  assert.match(feed.snapshot(now).message, /will be retried/);
+  await feed.refresh([], now);
+  assert.equal(reads, 2);
+});

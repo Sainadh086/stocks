@@ -26,6 +26,10 @@ import {
   investmentDir,
   investmentScope,
 } from "./brokers/india-selection.js";
+import {
+  indiaTradingIndices,
+  type IndiaTradingIndex,
+} from "./trading/india-indices.js";
 const frame = (dir: string, prefix: string) => {
   const path = latest(dir, prefix);
   return path ? store.csv(path) : [];
@@ -181,6 +185,59 @@ export function nasdaqConstituents(text: string): string[] {
     .filter((symbol) => /^[A-Z0-9-]+$/.test(symbol));
   if (!symbols.length) throw new Error("Index list has no usable symbols.");
   return [...new Set(symbols)];
+}
+export const indiaIndexCacheFile = join(
+  INDIA,
+  "trading_index_constituents.json",
+);
+export async function indiaTradingUniverse(
+  index: IndiaTradingIndex = "Nifty 100",
+): Promise<string[]> {
+  const spec = indiaTradingIndices[index];
+  if (!spec) throw new Error("Choose a supported India trading index.");
+  const day = localDay(Date.now(), "NSE");
+  const cache = store.json<Record<string, Row>>(indiaIndexCacheFile, {});
+  const valid = (symbols: unknown): symbols is string[] =>
+    Array.isArray(symbols) &&
+    symbols.length >= spec.min &&
+    symbols.length <= spec.max &&
+    new Set(symbols).size === symbols.length &&
+    symbols.every(
+      (s) => typeof s === "string" && /^[A-Z0-9][A-Z0-9&.\-]{0,29}$/.test(s),
+    );
+  if (cache[index]?.day === day && valid(cache[index].symbols))
+    return [...cache[index].symbols];
+  const response = await fetch(
+    "https://nsearchives.nseindia.com/content/indices/" + spec.file,
+    {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(20000),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      `Could not load the ${index} trading universe. New entries wait for a successful scan.`,
+    );
+  const rows: Row[] = parse(await response.text(), {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+  });
+  const symbols = [
+    ...new Set(
+      rows
+        .filter((r) => r.Series === "EQ")
+        .map((r) => String(r.Symbol ?? "").toUpperCase())
+        .filter((s) => /^[A-Z0-9][A-Z0-9&.\-]{0,29}$/.test(s)),
+    ),
+  ];
+  if (!valid(symbols))
+    throw new Error(
+      `${index} constituent list is incomplete. New entries wait for a valid universe.`,
+    );
+  cache[index] = { day, fetched_at: new Date().toISOString(), symbols };
+  store.save(indiaIndexCacheFile, cache);
+  return symbols;
 }
 export async function universe(market: "India" | "US"): Promise<string[]> {
   if (

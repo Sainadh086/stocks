@@ -123,7 +123,9 @@ export class Feed {
         ...new Set([
           ...(this.day === day
             ? Object.keys(this.baseline)
-            : await this.sources.universe("US")),
+            : await this.sources.universe(
+                this.exchange === "NSE" ? "India" : "US",
+              )),
           ...protectedSet,
         ]),
       ];
@@ -160,6 +162,10 @@ export class Feed {
         this.baseline = Object.fromEntries(
           frames.filter(([, bars]) => bars.length),
         );
+        if (!Object.keys(this.baseline).length)
+          throw new Error(
+            "No opening-range history available. The stock universe will be retried.",
+          );
         this.day = day;
       }
       // Once the opening ranges are known, poll only the shortlisted and held
@@ -511,7 +517,22 @@ export function buildActions(
     ) {
       if (localDay(Date.parse(t.reviewed_at), "NYSE") === day)
         traded.add(t.arguments.symbol);
-      if ([STRATEGY, ROTATION_STRATEGY].includes(t.strategy))
+      const receipt =
+        orders.find(
+          (o) =>
+            (t.id && o.ref_id === t.id) ||
+            (t.result?.order?.id && o.id === t.result.order.id),
+        ) ?? t.result?.order;
+      // A failed retry without fills does not own the existing shares.
+      const hasFill =
+        (amount(receipt?.filled_quantity ?? receipt?.cumulative_quantity) ??
+          0) > 0 ||
+        (Array.isArray(receipt?.executions) &&
+          receipt.executions.some((e: Row) => (amount(e.quantity) ?? 0) > 0));
+      if (
+        [STRATEGY, ROTATION_STRATEGY].includes(t.strategy) &&
+        (!failedOrderStates.has(receipt?.state) || hasFill)
+      )
         entries[t.arguments.symbol] = t;
     }
   }
@@ -545,22 +566,24 @@ export function buildActions(
     let reason: string | null = null;
     let effectiveStop: number | null = null,
       effectiveTarget: number | null = null;
-    if (
-      (!t && !rotating) ||
-      (t && localDay(Date.parse(t.reviewed_at), "NYSE") !== day)
-    )
-      reason =
-        "Flatten carried or legacy holding in the Agentic trading account.";
-    else if (rotating && dailyLossHit)
+    let riskWait: string | null = null;
+    if (rotating && dailyLossHit)
       reason =
         "Daily 1% loss circuit breaker: exit holdings and halt entries for this session.";
     else if (hours && now >= hours[1] - 300000)
       reason = "Scheduled exit five minutes before exchange close.";
     else {
       const price = amount(q?.last_trade_price),
-        initialStop = amount(
-          t?.stop ?? candidates.find((c) => c.symbol === symbol)?.range_low,
-        ),
+        savedStop = amount(t?.stop ?? t?.initial_stop),
+        analyzedStop = signals.fresh
+          ? amount(candidates.find((c) => c.symbol === symbol)?.range_low)
+          : null,
+        initialStop =
+          savedStop != null && savedStop > 0
+            ? savedStop
+            : analyzedStop != null && analyzedStop > 0
+              ? analyzedStop
+              : null,
         entry = amount(p.average_buy_price),
         stop =
           rotating && hours && initialStop != null && entry != null && t
@@ -576,16 +599,20 @@ export function buildActions(
                 ),
               )
             : initialStop,
+        savedTarget = amount(t?.target),
         target =
-          amount(t?.target) ??
-          (entry != null && initialStop != null && entry > initialStop
-            ? entry + 2 * (entry - initialStop)
-            : null);
-      effectiveStop = stop;
+          savedTarget != null && savedTarget > 0
+            ? savedTarget
+            : entry != null && initialStop != null && entry > initialStop
+              ? entry + 2 * (entry - initialStop)
+              : null;
+      effectiveStop =
+        stop != null && Number.isFinite(stop) && stop > 0 ? stop : null;
       effectiveTarget = target;
-      if ((stop == null || target == null) && (!rotating || t))
-        reason = "Exit holding with missing intraday risk levels.";
-      else if (price != null && stop != null && price <= stop)
+      if (effectiveStop == null || target == null)
+        riskWait =
+          "Waiting for current analysis and valid risk levels for the existing holding.";
+      if (price != null && stop != null && price <= stop)
         reason =
           rotating && initialStop != null && stop > initialStop
             ? "Break-even or trailing stop hit."
@@ -602,7 +629,9 @@ export function buildActions(
             ? "Waiting for a recent broker quote."
             : available == null || available <= 0
               ? "No shares available to sell."
-              : null),
+              : reason
+                ? null
+                : riskWait),
       basis = amount(p.average_buy_price),
       price = amount(q?.last_trade_price),
       quantity = Number(p.quantity);

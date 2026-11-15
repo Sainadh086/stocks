@@ -186,10 +186,12 @@ export function Table({
   rows = [],
   columns,
   name = "Holdings",
+  rowActions,
 }: {
   rows?: Row[];
   columns?: string[];
   name?: string;
+  rowActions?: (row: Row) => ReactNode;
 }) {
   const { privacy } = usePreferences();
   const safeDisplay = (value: unknown, key: string) =>
@@ -305,6 +307,7 @@ export function Table({
         <table aria-label={name}>
           <thead>
             <tr>
+              {rowActions && <th scope="col">Trade</th>}
               {keys.map((key) => (
                 <th
                   key={key}
@@ -340,6 +343,7 @@ export function Table({
           <tbody>
             {filtered.slice(current * 25, (current + 1) * 25).map((row, i) => (
               <tr key={`${String(row.symbol || row.stock || i)}-${i}`}>
+                {rowActions && <td>{rowActions(row)}</td>}
                 {keys.map((key) => (
                   <td key={key} className={columnClasses[key]}>
                     {[

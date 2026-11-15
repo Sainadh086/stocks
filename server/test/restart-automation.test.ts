@@ -153,6 +153,7 @@ test(
     const records = fixture();
     records.set(indiaTradingFile, {
       broker: "groww",
+      broker_selected: true,
       current: { groww: "india-account" },
       accounts: {
         "india-account": {
@@ -264,8 +265,10 @@ test("legacy browser-bound consent is not restored without its browser connectio
   }
 });
 
-for (const state of ["filled", "queued", "missing"]) {
-  test(`resume reconciles ${state} broker status without replaying an interrupted buy`, async () => {
+for (const { state, carried } of ["filled", "queued", "missing"].flatMap(
+  (state) => [false, true].map((carried) => ({ state, carried })),
+)) {
+  test(`resume reconciles ${state} ${carried ? "prior-session" : "same-session"} broker status without replaying an interrupted buy`, async () => {
     const records = fixture(),
       original = new Service(false);
     await enable(original);
@@ -274,7 +277,9 @@ for (const state of ["filled", "queued", "missing"]) {
       status: "submitting",
       strategy: ROTATION_STRATEGY,
       origin: "strategy",
-      reviewed_at: new Date(now - 10000).toISOString(),
+      reviewed_at: new Date(
+        now - (carried ? 3 * 86400000 : 10000),
+      ).toISOString(),
       stop: "80",
       target: "170",
       arguments: {

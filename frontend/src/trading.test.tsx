@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,7 @@ function setup(
   overrides: Record<string, unknown> = {},
 ) {
   const posts: string[] = [];
+  const requests: { path: string; body: unknown }[] = [];
   const live: any = {
     scope: "fixture",
     snapshot: null,
@@ -42,7 +44,10 @@ function setup(
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
       const path = String(input);
-      if (init?.method === "POST") posts.push(path);
+      if (init?.method === "POST") {
+        posts.push(path);
+        requests.push({ path, body: JSON.parse(String(init.body)) });
+      }
       let data: unknown = null;
       if (path === "/api/bootstrap") data = { token: "fixture-token" };
       if (path === "/api/accounts")
@@ -77,12 +82,18 @@ function setup(
         data = live.auto;
       }
       if (path === "/api/live/preview") {
-        live.batch = { id: "batch", status: "preview", ticket_ids: ["ticket"] };
+        const symbol = JSON.parse(String(init?.body)).symbol ?? "DEMO";
+        live.batch = {
+          id: "batch",
+          status: "preview",
+          ticket_ids: ["ticket"],
+          ...(symbol !== "DEMO" ? { buy_symbol: symbol } : {}),
+        };
         live.tickets = [
           {
             id: "ticket",
             status: "preview",
-            arguments: { symbol: "DEMO", side: "buy", dollar_amount: "25.00" },
+            arguments: { symbol, side: "buy", dollar_amount: "25.00" },
           },
         ];
         data = { id: "job", status: "completed", result: live };
@@ -119,7 +130,7 @@ function setup(
       <Trading connection="fixture" />
     </QueryClientProvider>,
   );
-  return { posts, client, live };
+  return { posts, requests, client, live };
 }
 
 describe("trading review prompts", () => {
@@ -409,3 +420,80 @@ describe("live trading visibility", () => {
     expect(posts).toEqual([]);
   });
 });
+
+describe("shortlist row buys", () => {
+  const model = (blocked = false) => ({
+    shortlist: [{ symbol: "AAA" }, { symbol: "BBB" }],
+    actions: ["AAA", "BBB"].map((symbol) => ({
+      symbol,
+      side: "buy",
+      action: blocked ? "WAIT" : "BUY",
+      enabled: !blocked,
+      dollar_amount: "25.00",
+      reason: blocked ? "Waiting for a current quote" : "Confirmed breakout",
+    })),
+  });
+  it("reviews only the clicked US stock and requires explicit order confirmation", async () => {
+    const f = setup(false, true, false, { model: model() });
+    fireEvent.click(await screen.findByRole("button", { name: "Later" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buy BBB" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /Confirm US BUY BBB/,
+    });
+    expect(f.requests).toEqual([
+      {
+        path: "/api/live/preview",
+        body: { symbol: "BBB", expected_scope: "fixture" },
+      },
+    ]);
+    expect(
+      within(dialog).getByRole("table", { name: "Selected US buy" }),
+    ).toHaveTextContent("BBB");
+    expect(within(dialog).queryByText("AAA")).not.toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", {
+      name: "Confirm real orders",
+    });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox"));
+    fireEvent.click(confirm);
+    await waitFor(() =>
+      expect(f.posts).toEqual([
+        "/api/live/preview",
+        "/api/live/batches/batch/confirm",
+      ]),
+    );
+  });
+  it("keeps a shortlisted US buy disabled while automation is running", async () => {
+    const f = setup(true, true, false, { model: model() });
+    expect(
+      await screen.findByRole("button", { name: "Buy BBB" }),
+    ).toBeDisabled();
+    expect(
+      screen.getAllByText("Pause automatic trading to buy manually.").length,
+    ).toBeGreaterThan(0);
+    expect(f.posts).toEqual([]);
+  });
+  it("shows an ineligible shortlisted stock's reason and cannot submit it", async () => {
+    const f = setup(false, false, false, { model: model(true) });
+    const button = await screen.findByRole("button", { name: "Buy BBB" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(f.posts).toEqual([]);
+  });
+});
+
+it.each(["closed", "stale"])(
+  "blocks a US shortlist row buy when the monitor is %s",
+  async (state) => {
+    const f = setup(false, true, false, {
+      monitor: {
+        market_open: state !== "closed",
+        signal_fresh: state !== "stale",
+        watchlist: [{ symbol: "DEMO" }],
+      },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Later" }));
+    expect(screen.getByRole("button", { name: "Buy DEMO" })).toBeDisabled();
+    expect(f.posts).toEqual([]);
+  },
+);

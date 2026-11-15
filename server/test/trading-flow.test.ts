@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import { Service } from "../src/service.js";
 import { store, type Row } from "../src/shared/storage.js";
 import { rolesFile } from "../src/brokers/accounts.js";
-import { connected, McpConnectionError } from "../src/brokers/robinhood.js";
+import {
+  connected,
+  McpConnectionError,
+  ticketsFile,
+} from "../src/brokers/robinhood.js";
 import { session } from "../src/shared/calendar.js";
 
 for (const delayed of [false, true])
   for (const automatic of delayed ? [true] : [false, true])
     for (const carried of [false, true])
-      test(`${automatic ? "automatic" : "manual"} ${carried ? "sell then buy" : "buy"} ${delayed ? "with delayed signals " : ""}flow submits only with consent and reuses its MCP session`, async () => {
+      test(`${automatic ? "automatic" : "manual"} ${carried ? "stop-triggered sell then buy" : "buy"} ${delayed ? "with delayed signals " : ""}flow submits only with consent and reuses its MCP session`, async () => {
         const now = session("2026-10-12")![0] + 1230000;
         mock.timers.enable({ apis: ["Date"], now });
         const records = new Map<string, Row>([
@@ -38,6 +42,19 @@ for (const delayed of [false, true])
               },
             ]
           : [];
+        if (carried)
+          records.set(ticketsFile, {
+            entry: {
+              id: "entry",
+              status: "submitted",
+              strategy: "orb_15m_v1",
+              reviewed_at: new Date(now - 600000).toISOString(),
+              stop: "101",
+              target: "110",
+              arguments: { account_number: "TRADE", symbol: "A", side: "buy" },
+              result: { order: { id: "entry", state: "filled" } },
+            },
+          });
         let cash = carried ? 100 : 1000;
         const orders: Row[] = [],
           placements: string[] = [];
@@ -201,7 +218,7 @@ for (const delayed of [false, true])
             mock.timers.setTime(now + 2000);
             await (service as any).tick();
             if (delayed) {
-              // Carried positions can exit while signals are still loading.
+              // A recorded stop can exit a holding while entry signals are loading.
               assert.deepEqual(placements, carried ? ["sell:A"] : []);
               release();
               await (service as any).feedWork;

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { TradingStrategyResearch } from "./strategy-research";
 import {
   Activity,
@@ -45,11 +46,21 @@ export interface IndiaLive {
   scope: string | null;
   investment_scope?: string | null;
   configured?: boolean;
-  settings: { budget: number; reserve_pct: number; symbols: string[] };
+  indices?: string[];
+  settings_revision?: number;
+  settings_saved_at?: string | null;
+  settings: {
+    budget: number;
+    reserve_pct: number;
+    symbols: string[];
+    selection_mode?: "automatic" | "manual";
+    index?: string;
+  };
   auto: { enabled: boolean; error?: string; expires_at?: number };
   phase: string;
   snapshot: {
     user: string;
+    cached?: boolean;
     cash: number;
     positions: Row[];
     updated_at: string;
@@ -58,6 +69,8 @@ export interface IndiaLive {
   signals: {
     message: string;
     asof: string | null;
+    shortlist?: Row[];
+    fresh?: boolean;
     scan?: { phase?: string; completed: number; total: number };
   };
   tickets: IndiaTicket[];
@@ -254,40 +267,165 @@ export function IndiaTrading({
     active,
   );
   const data = live.data;
+  const client = useQueryClient();
+  const identity = data?.broker
+    ? `${data.broker}:${data.scope ?? data.investment_scope ?? "unverified"}`
+    : null;
+  const formState = useRef({ identity: "", dirty: false, revision: 0 });
   const [budget, setBudget] = useState(100000),
     [reserve, setReserve] = useState(10),
     [symbols, setSymbols] = useState("");
+  const [selectionMode, setSelectionMode] = useState<"automatic" | "manual">(
+    "automatic",
+  );
+  const [index, setIndex] = useState("Nifty 100");
+  const [cacheError, setCacheError] = useState<string | null>(null);
   const [preview, setPreview] = useState<IndiaTicket | null>(null),
     [start, setStart] = useState(false),
     [cancelling, setCancelling] = useState<IndiaTicket | null>(null);
   const [manualRefresh, setManualRefresh] = useState(false);
+  function populate(
+    settings: IndiaLive["settings"],
+    revision: number,
+    accountIdentity: string,
+  ) {
+    setBudget(settings.budget);
+    setReserve(settings.reserve_pct);
+    setSymbols(settings.symbols.join(", "));
+    setSelectionMode(settings.selection_mode ?? "automatic");
+    setIndex(settings.index ?? "Nifty 100");
+    formState.current = { identity: accountIdentity, dirty: false, revision };
+  }
+  function clearDraft(accountIdentity: string) {
+    try {
+      localStorage.removeItem(`india-trading-draft:${accountIdentity}`);
+    } catch {
+      setCacheError(
+        "Browser draft caching is unavailable. Confirmed settings are still saved on this computer.",
+      );
+    }
+  }
   useEffect(() => {
-    if (!data?.settings) return;
-    setBudget(data.settings.budget);
-    setReserve(data.settings.reserve_pct);
-    setSymbols(data.settings.symbols.join(", "));
-    setPreview(null);
-    // Forms belong to this broker account and retain edits during status polling.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.scope, data?.broker]);
-  const save = useAction(
-    () =>
-      runJob("/india/trading/settings", {
-        budget,
-        reserve_pct: reserve,
-        symbols: symbols
-          .split(/[\s,]+/)
-          .map((s) => s.trim().toUpperCase().replace(/\.NS$/, ""))
-          .filter(Boolean),
-      }),
-    keys,
-  );
+    if (!data?.settings || !identity) return;
+    const revision = data.settings_revision ?? 0;
+    if (formState.current.identity !== identity) {
+      populate(data.settings, revision, identity);
+      setPreview(null);
+      setStart(false);
+      setCancelling(null);
+      save.reset();
+      refresh.reset();
+      try {
+        const draft = JSON.parse(
+          localStorage.getItem(`india-trading-draft:${identity}`) ?? "null",
+        );
+        const form = draft?.form;
+        if (
+          draft?.revision === revision &&
+          form &&
+          Number.isFinite(form.budget) &&
+          form.budget >= 0 &&
+          Number.isFinite(form.reserve) &&
+          form.reserve >= 0 &&
+          form.reserve <= 100 &&
+          typeof form.symbols === "string" &&
+          ["automatic", "manual"].includes(form.selectionMode) &&
+          typeof form.index === "string" &&
+          (!data.indices || data.indices.includes(form.index))
+        ) {
+          setBudget(form.budget);
+          setReserve(form.reserve);
+          setSymbols(form.symbols);
+          setSelectionMode(form.selectionMode);
+          setIndex(form.index);
+          formState.current.dirty = true;
+        } else if (draft) clearDraft(identity);
+      } catch {
+        clearDraft(identity);
+      }
+    } else if (!formState.current.dirty)
+      populate(data.settings, revision, identity);
+  }, [identity, data?.settings, data?.settings_revision]);
+  function edit(
+    change: Partial<{
+      budget: number;
+      reserve: number;
+      symbols: string;
+      selectionMode: "automatic" | "manual";
+      index: string;
+    }>,
+  ) {
+    const form = { budget, reserve, symbols, selectionMode, index, ...change };
+    setBudget(form.budget);
+    setReserve(form.reserve);
+    setSymbols(form.symbols);
+    setSelectionMode(form.selectionMode);
+    setIndex(form.index);
+    formState.current.dirty = true;
+    if (identity) {
+      try {
+        localStorage.setItem(
+          `india-trading-draft:${identity}`,
+          JSON.stringify({ revision: formState.current.revision, form }),
+        );
+        setCacheError(null);
+      } catch {
+        setCacheError(
+          "Browser draft caching is unavailable. Save settings before refreshing this page.",
+        );
+      }
+    }
+  }
+  const save = useAction(async () => {
+    const result = await runJob<IndiaLive>("/india/trading/settings", {
+      budget,
+      reserve_pct: reserve,
+      selection_mode: selectionMode,
+      index,
+      expected_revision: formState.current.revision,
+      expected_broker: data?.broker,
+      ...((data?.scope ?? data?.investment_scope)
+        ? { expected_scope: data?.scope ?? data?.investment_scope }
+        : {}),
+      symbols:
+        selectionMode === "automatic"
+          ? []
+          : symbols
+              .split(/[\s,]+/)
+              .map((s) => s.trim().toUpperCase().replace(/\.NS$/, ""))
+              .filter(Boolean),
+    });
+    await client.cancelQueries({ queryKey: keys });
+    const current = client.getQueryData<IndiaLive>(keys);
+    const savedScope = result.scope ?? result.investment_scope;
+    const currentScope = current?.scope ?? current?.investment_scope;
+    if (
+      current &&
+      (current.broker !== result.broker ||
+        (currentScope && savedScope && currentScope !== savedScope))
+    )
+      throw new Error(
+        "Settings were saved for the previous account. Reload the currently selected account before trading.",
+      );
+    if (identity) clearDraft(identity);
+    const savedIdentity = `${result.broker}:${result.scope ?? result.investment_scope ?? "unverified"}`;
+    populate(result.settings, result.settings_revision ?? 0, savedIdentity);
+    client.setQueryData(keys, result);
+    return result;
+  }, []);
   const refresh = useAction(() => runJob("/india/trading/refresh"), keys);
   const review = useAction(
     (action: IndiaAction) =>
       runJob<IndiaTicket>("/india/trading/preview", {
         symbol: action.symbol,
         side: action.side,
+        ...(action.from_shortlist
+          ? {
+              expected_scope: data?.scope ?? data?.investment_scope,
+              expected_revision: data?.settings_revision ?? 0,
+              expected_broker: data?.broker,
+            }
+          : {}),
       }),
     keys,
   );
@@ -390,6 +528,21 @@ export function IndiaTrading({
   const selectedBroker = data.brokers.find((b) => b.id === data.broker);
   const positions =
     data.snapshot?.positions.filter((p) => p.quantity !== 0) ?? [];
+  const settingsChanged =
+    budget !== data.settings.budget ||
+    reserve !== data.settings.reserve_pct ||
+    selectionMode !== (data.settings.selection_mode ?? "automatic") ||
+    index !== (data.settings.index ?? "Nifty 100") ||
+    (selectionMode === "manual" &&
+      JSON.stringify(
+        symbols
+          .split(/[\s,]+/)
+          .map((s) => s.trim().toUpperCase().replace(/\.NS$/, ""))
+          .filter(Boolean),
+      ) !== JSON.stringify(data.settings.symbols));
+  const settingsConflict =
+    formState.current.dirty &&
+    formState.current.revision !== (data.settings_revision ?? 0);
   return (
     <div className="india-trading-workspace">
       <div className="india-session-strip">
@@ -440,7 +593,7 @@ export function IndiaTrading({
               <span>2</span>
               <div>
                 <strong>Set your trading limits</strong>
-                <small>Save the budget and watchlist</small>
+                <small>Save the budget and stock selection</small>
               </div>
             </li>
             <li>
@@ -465,7 +618,7 @@ export function IndiaTrading({
               min={1}
               value={budget}
               disabled={busy || data.auto.enabled || pending}
-              onChange={(e) => setBudget(Number(e.target.value))}
+              onChange={(e) => edit({ budget: Number(e.target.value) })}
             />
           </label>
           <label>
@@ -476,19 +629,57 @@ export function IndiaTrading({
               max={100}
               value={reserve}
               disabled={busy || data.auto.enabled || pending}
-              onChange={(e) => setReserve(Number(e.target.value))}
+              onChange={(e) => edit({ reserve: Number(e.target.value) })}
             />
           </label>
         </div>
         <label>
-          NSE watchlist (1–20 symbols)
-          <input
-            value={symbols}
+          Stock selection
+          <select
+            value={selectionMode}
             disabled={busy || data.auto.enabled || pending}
-            placeholder="RELIANCE, INFY, HDFCBANK"
-            onChange={(e) => setSymbols(e.target.value)}
-          />
+            onChange={(e) =>
+              edit({ selectionMode: e.target.value as "automatic" | "manual" })
+            }
+          >
+            <option value="automatic">Automatic · Index stocks</option>
+            <option value="manual">Custom NSE watchlist</option>
+          </select>
         </label>
+        {selectionMode === "automatic" && (
+          <label>
+            Trading index
+            <select
+              value={index}
+              disabled={busy || data.auto.enabled || pending}
+              onChange={(e) => edit({ index: e.target.value })}
+            >
+              {(data.indices ?? ["Nifty 100"]).map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {selectionMode === "manual" ? (
+          <label>
+            NSE watchlist (1–20 symbols)
+            <input
+              value={symbols}
+              disabled={busy || data.auto.enabled || pending}
+              placeholder="RELIANCE, INFY, HDFCBANK"
+              onChange={(e) => edit({ symbols: e.target.value })}
+            />
+          </label>
+        ) : (
+          <Notice>
+            Automatically scans {index} stocks and maintains up to four
+            candidates using the same scanner as US trading. No stock names are
+            required. Larger indices take longer to scan. Save settings, then
+            refresh or start automatic trading.
+          </Notice>
+        )}
         <div className="india-controls-footer">
           <div className="actions">
             <button
@@ -499,7 +690,7 @@ export function IndiaTrading({
                 !(budget > 0) ||
                 reserve < 0 ||
                 reserve > 100 ||
-                !symbols.trim()
+                (selectionMode === "manual" && !symbols.trim())
               }
               onClick={() => save.mutate()}
             >
@@ -532,6 +723,8 @@ export function IndiaTrading({
                 pending ||
                 !connected ||
                 !data.configured ||
+                settingsChanged ||
+                settingsConflict ||
                 data.phase !== "Market open" ||
                 !!data.error ||
                 !!refresh.error
@@ -542,9 +735,62 @@ export function IndiaTrading({
             </button>
           )}
         </div>
+        {cacheError && <Notice>{cacheError}</Notice>}
+        {settingsConflict && (
+          <Notice error>
+            Saved settings changed in another window. Reload saved settings
+            before saving or trading.
+          </Notice>
+        )}
+        {(settingsChanged || settingsConflict) && (
+          <button
+            disabled={busy}
+            onClick={() => {
+              if (identity) {
+                clearDraft(identity);
+                populate(data.settings, data.settings_revision ?? 0, identity);
+                save.reset();
+              }
+            }}
+          >
+            Reload saved settings
+          </button>
+        )}
+        {settingsChanged && (
+          <Notice>
+            Save your budget and stock selection changes before starting or
+            reviewing trades.
+          </Notice>
+        )}
         {save.isSuccess && (
           <Notice>
-            India budget and watchlist saved for this broker account.
+            Saved locally:{" "}
+            <PrivateValue>
+              {money(save.data?.settings.budget, "INR")}
+            </PrivateValue>{" "}
+            budget, {save.data?.settings.reserve_pct}% reserve ·{" "}
+            {save.data?.settings.index ?? "Nifty 100"}.
+          </Notice>
+        )}
+        {data.configured && (
+          <p className="footnote">
+            Confirmed budget:{" "}
+            <PrivateValue>{money(data.settings.budget, "INR")}</PrivateValue> ·{" "}
+            {data.settings.reserve_pct}% reserve ·{" "}
+            {data.settings.index ?? "Nifty 100"}
+            {data.settings_saved_at
+              ? ` · Saved ${new Date(data.settings_saved_at).toLocaleString()}`
+              : ""}
+            . Stored encrypted on this computer. Unsaved edits never change
+            trading limits.
+          </p>
+        )}
+        {data.snapshot?.cached && (
+          <Notice>
+            Showing a saved account snapshot from{" "}
+            {new Date(data.snapshot.updated_at).toLocaleString()}. Refresh
+            broker status for current values; cached values cannot authorize
+            trades.
           </Notice>
         )}
         <p className="footnote">
@@ -574,6 +820,102 @@ export function IndiaTrading({
           privateData={false}
         />
       </div>
+      <Card
+        title="India stock shortlist"
+        subtitle={
+          data.settings.selection_mode === "manual"
+            ? "Automatically ranked from your custom NSE watchlist"
+            : `Automatically ranked from ${data.settings.index ?? "Nifty 100"}`
+        }
+      >
+        {data.signals.shortlist?.length && data.signals.fresh === false ? (
+          <Notice>
+            Previous shortlist; waiting for a successful current scan. New buys
+            are blocked.
+          </Notice>
+        ) : null}
+        {data.signals.shortlist?.length ? (
+          <Table
+            name="India shortlisted stocks"
+            rows={data.signals.shortlist}
+            rowActions={(row) => {
+              const symbol = String(row.symbol);
+              const action = data.actions.find(
+                (a) => a.symbol === symbol && a.side === "buy",
+              );
+              const reason = !connected
+                ? "Connect the selected broker account first."
+                : !data.configured
+                  ? "Save this account's trading settings first."
+                  : data.auto.enabled
+                    ? "Pause automatic trading to buy manually."
+                    : pending
+                      ? "Reconcile pending orders before buying."
+                      : settingsConflict || settingsChanged
+                        ? "Save or reload your trading limits before buying."
+                        : data.phase !== "Market open"
+                          ? "NSE market closed."
+                          : data.snapshot?.cached ||
+                              data.signals.fresh === false
+                            ? "Refresh broker status and the shortlist before buying."
+                            : !action?.enabled
+                              ? (data.actions.find((a) => a.symbol === symbol)
+                                  ?.reason ??
+                                "Waiting for an eligible buy setup.")
+                              : null;
+              return (
+                <div>
+                  <button
+                    disabled={busy || !!reason}
+                    onClick={() => {
+                      if (action)
+                        review.mutate(
+                          { ...action, from_shortlist: true },
+                          {
+                            onSuccess: (ticket) => {
+                              confirm.reset();
+                              setPreview(ticket);
+                            },
+                          },
+                        );
+                    }}
+                  >
+                    Buy {symbol}
+                  </button>
+                  {reason && (
+                    <small className="footnote">
+                      <PrivateValue>{String(reason)}</PrivateValue>
+                    </small>
+                  )}
+                </div>
+              );
+            }}
+            columns={[
+              "symbol",
+              "relative_volume",
+              "rotation_score",
+              "baseline_sessions",
+              "watch_since",
+              "replaced_symbol",
+            ]}
+          />
+        ) : (
+          <Notice>
+            No stocks currently qualify. The scanner waits for a completed
+            15-minute opening range and at least 1.5× relative volume. It
+            rotates waiting candidates and keeps held stocks and pending orders
+            under separate monitoring.
+          </Notice>
+        )}
+        <p className="footnote">
+          Buy opens a review for that stock only, sized using your saved budget
+          and risk limits. Confirm the displayed order to submit it. A shortlist
+          is a set of candidates. Orders also require completed breakout, VWAP
+          and EMA confirmation, current broker prices, spread, cost and budget
+          checks. Manual mode requires order confirmation; automatic mode uses
+          your session consent.
+        </p>
+      </Card>
       <Card title="India strategy monitor" subtitle={data.signals.message}>
         {!!data.signals.scan?.total && (
           <p>
@@ -617,7 +959,13 @@ export function IndiaTrading({
             .map((a) => (
               <button
                 key={`${a.symbol}-${a.side}`}
-                disabled={busy || data.auto.enabled || pending}
+                disabled={
+                  busy ||
+                  data.auto.enabled ||
+                  pending ||
+                  settingsChanged ||
+                  settingsConflict
+                }
                 onClick={() =>
                   review.mutate(a, {
                     onSuccess: (ticket) => {
@@ -804,10 +1152,13 @@ export function IndiaTrading({
             {data.brokers.find((b) => b.id === data.broker)?.name} using the
             saved{" "}
             <PrivateValue>{money(data.settings.budget, "INR")}</PrivateValue>{" "}
-            budget and watchlist until this exchange session closes. It
-            continues when this browser closes. Stop it from this tab. A
-            graceful server restart pauses this India session; unresolved orders
-            always block new submissions.
+            budget and{" "}
+            {data.settings.selection_mode === "manual"
+              ? "custom NSE watchlist"
+              : `automatically selected ${data.settings.index ?? "Nifty 100"} candidates`}{" "}
+            until this exchange session closes. It continues when this browser
+            closes. Stop it from this tab. A graceful server restart pauses this
+            India session; unresolved orders always block new submissions.
           </p>
           <Failure error={automation.error} />
         </ConfirmDialog>

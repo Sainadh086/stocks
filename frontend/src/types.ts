@@ -101,6 +101,7 @@ export interface Batch extends Row {
 }
 export interface Live {
   monitor?: {
+    market_open?: boolean;
     stage: string;
     message: string;
     last_check: string | null;
