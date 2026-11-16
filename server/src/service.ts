@@ -42,6 +42,7 @@ import { ROTATION_STRATEGY, TradeDecisionChanged } from "./trading/rotation.js";
 import { automationPreferencePath } from "./trading/automation.js";
 import * as orb from "./trading/orb.js";
 import { tradingProgress } from "./trading/progress.js";
+import { session, localDay } from "./shared/calendar.js";
 import { weeklyEvents } from "./insights.js";
 import { IndiaTrading } from "./trading/india.js";
 import { gemsPlan } from "./brokers/gems-plan.js";
@@ -423,6 +424,18 @@ export class Service {
       supported_themes: themeIds,
     };
   }
+  setLearningExecution(enabled: boolean): Promise<Row> {
+    return this.lock.run(async () => {
+      this.idle();
+      if (this.pendingSymbols().length)
+        throw new Error(
+          "Reconcile pending US orders before changing learning settings.",
+        );
+      const settings = await this.india.setLearningExecution(enabled);
+      this.model = null;
+      return settings;
+    });
+  }
   savePreferences(input: string[] | Row) {
     const patch: Row = Array.isArray(input) ? { top_benchmarks: input } : input;
     const names: string[] =
@@ -783,6 +796,36 @@ export class Service {
       settings.reserve_pct,
       robinhood.listTickets(number),
     );
+    if (signals.fresh)
+      rememberLearning(
+        {
+          market: "US",
+          horizon: "trading",
+          broker: "robinhood",
+          scope: accounts.scope(number),
+        },
+        signals.strategy,
+        (signals.candidates ?? signals.ranked).flatMap((pick) => {
+          const observation = marketObservation(
+            signals.bars[pick.symbol],
+            Date.now(),
+          );
+          const decision = this.model!.actions.find(
+            (a: Row) => a.symbol === pick.symbol,
+          );
+          return observation
+            ? [
+                {
+                  ...pick,
+                  ...observation,
+                  reason:
+                    decision?.reason ??
+                    "Observed US trading scan; no order required",
+                },
+              ]
+            : [];
+        }),
+      );
     this.liveError = null;
     this.recordLive("decision", {
       signal_time: signals.asof,
@@ -1444,9 +1487,10 @@ export class Service {
     try {
       const now = Date.now();
       if (
-        (this.india.enabled || this.india.hasPending) &&
+        (this.india.enabled || this.india.hasPending || this.india.observing) &&
         !this.indiaWork &&
-        now - this.lastIndia >= 5000
+        now - this.lastIndia >=
+          (this.india.enabled || this.india.hasPending ? 5000 : 60000)
       ) {
         this.lastIndia = now;
         this.indiaWork = this.india
@@ -1484,11 +1528,22 @@ export class Service {
           });
       }
       const batch = this.state.batch,
-        wanted =
+        interactive =
           this.auto.enabled ||
           (batch && active.has(batch.status)) ||
-          [...this.connections.values()].some((c) => c.live);
-      if (wanted && !this.feedWork && now - this.lastFeed >= 15000) {
+          [...this.connections.values()].some((c) => c.live),
+        hours = session(localDay(now, "NYSE")),
+        number =
+          hours && now >= hours[0] && now < hours[1]
+            ? accounts.roles().trading
+            : null,
+        observing = !!(number && accounts.settings(number).budget),
+        wanted = interactive || observing;
+      if (
+        wanted &&
+        !this.feedWork &&
+        now - this.lastFeed >= (interactive ? 15000 : 60000)
+      ) {
         this.lastFeed = now;
         this.feedWork = this.feed
           .refresh(
@@ -1510,11 +1565,13 @@ export class Service {
           });
       }
       const liveInterval =
-        this.model?.message === "Market closed."
-          ? 15000
-          : this.auto.enabled || (batch && active.has(batch.status))
-            ? 750
-            : 5000;
+        observing && !interactive
+          ? 60000
+          : this.model?.message === "Market closed."
+            ? 15000
+            : this.auto.enabled || (batch && active.has(batch.status))
+              ? 750
+              : 5000;
       if (
         wanted &&
         now >= this.liveRetryAt &&

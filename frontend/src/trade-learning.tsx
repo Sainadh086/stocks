@@ -3,12 +3,61 @@ import { Card, Failure, Metric, Notice, Table } from "./components";
 import { request, useAction, useData } from "./api";
 import type { Row } from "./types";
 
+export function LearningSettings() {
+  const settings = useData<{ execution_enabled: boolean }>(
+    ["learning", "settings"],
+    "/learning/settings",
+  );
+  const save = useAction(
+    (execution_enabled: boolean) =>
+      request("/learning/settings", { execution_enabled }),
+    ["learning", "live", "india-trading", "portfolios", "gems-plan"],
+  );
+  return (
+    <Card
+      title="Reinforcement learning"
+      subtitle="Always observe and recommend; trading influence is optional."
+    >
+      <Failure error={settings.error || save.error} />
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={settings.data?.execution_enabled === true}
+          disabled={
+            !settings.data ||
+            typeof settings.data.execution_enabled !== "boolean" ||
+            save.isPending
+          }
+          onChange={(event) => save.mutate(event.target.checked)}
+        />
+        Use reinforcement learning in trading and automatic trading
+      </label>
+      <p>
+        Off by default. The learner keeps recording available market context,
+        buys, sells and outcomes, and shows advice in Recommendations. When
+        enabled, validated learning scores may reorder eligible India and US
+        candidates, including investing plans. A configured US allocation model
+        may also influence sizing and reductions. Budget, broker consent, price,
+        stop and daily loss checks still apply. This switch does not start
+        automation.
+      </p>
+      <p className="footnote">
+        Pause automatic trading in both markets and resolve pending orders
+        before changing this setting. Saved locally in encrypted storage.
+      </p>
+      {save.isSuccess && <Notice>Learning preference saved.</Notice>}
+    </Card>
+  );
+}
+
 interface LearningData {
   contexts: { bucket: string; label: string }[];
   selected: string | null;
   orders: Row[];
   episodes: Row[];
   insights: Row[];
+  recommendations?: Row[];
+  execution_enabled?: boolean;
   policy: {
     ready: boolean;
     validated: boolean;
@@ -23,11 +72,11 @@ interface LearningData {
   coverage: string;
   error: string | null;
 }
-export function TradeLearning() {
+export function TradeLearning({ market }: { market?: "India" | "US" }) {
   const [bucket, setBucket] = useState("");
   const data = useData<LearningData>(
-    ["learning", bucket],
-    `/learning${bucket ? "?bucket=" + encodeURIComponent(bucket) : ""}`,
+    ["learning", market ?? "all", bucket],
+    `/learning?${new URLSearchParams({ ...(bucket ? { bucket } : {}), ...(market ? { market } : {}) })}`,
     30000,
   );
   const [key, setKey] = useState(""),
@@ -44,7 +93,11 @@ export function TradeLearning() {
   );
   return (
     <Card
-      title="Strategy learning & trade journal"
+      title={
+        market
+          ? `${market} reinforcement learning recommendations`
+          : "Strategy learning & trade journal"
+      }
       subtitle="Market context, completed outcomes and measured stock-selection guidance"
     >
       <Failure
@@ -53,9 +106,11 @@ export function TradeLearning() {
       <Notice>
         The advisor uses one-step Q-learning from completed position cycles. It
         learns select versus wait from downside-penalized outcomes, separately
-        by account, market, strategy and horizon. Validated models can adjust
-        shortlist order within existing eligibility and risk limits; real trades
-        never explore randomly.
+        by account, market, strategy and horizon. Observation and
+        recommendations continue with trading influence off. Enable trading
+        influence in Account settings → Reinforcement learning to let validated
+        models adjust shortlist order within existing eligibility and risk
+        limits; real trades never explore randomly.
       </Notice>
       {current && (
         <>
@@ -96,6 +151,16 @@ export function TradeLearning() {
           )}
           <div className="metrics">
             <Metric
+              title="Learning trading influence"
+              value={
+                current.execution_enabled
+                  ? "Enabled in settings"
+                  : "Recommendations only"
+              }
+              detail="Learning keeps observing either way"
+              privateData={false}
+            />
+            <Metric
               title="Observed orders"
               value={current.orders.length}
               detail="Buys, sells and pending states"
@@ -120,6 +185,28 @@ export function TradeLearning() {
               privateData={false}
             />
           </div>
+          {current.recommendations?.length ? (
+            <Table
+              name="Learning stock recommendations"
+              rows={current.recommendations}
+              columns={[
+                "symbol",
+                "strategy",
+                "learning_suggestion",
+                "learning_score",
+                "learning_reason",
+                "observed_reason",
+                "observed_at",
+              ]}
+            />
+          ) : (
+            <Notice>
+              Waiting for market observations. Refresh this account's trading
+              shortlist or run a fresh investing analysis. Completed trades
+              provide rewards; observing a move alone does not prove its
+              outcome.
+            </Notice>
+          )}
           {current.policy && (
             <>
               <Table

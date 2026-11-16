@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import {
   trainPortfolio,
@@ -9,7 +9,9 @@ import {
   type Policy,
 } from "../src/trading/rl.js";
 import { buy, sell, equity, step, type Bars } from "../src/trading/orb.js";
-import { buildActions } from "../src/trading/live.js";
+import { buildActions, Feed } from "../src/trading/live.js";
+import { learningSettingsFile, saveLearningSettings } from "../src/learning.js";
+import { store, type Row } from "../src/shared/storage.js";
 import { newAccount } from "../src/backtest.js";
 import { session } from "../src/shared/calendar.js";
 
@@ -113,6 +115,28 @@ test("RL inference ignores unfinished/future candles, caps weights and blocks un
     /five-minute/,
   );
 });
+test("runtime feeds ignore a configured allocation policy until learning execution is explicitly enabled", () => {
+  let saved: Row = {};
+  mock.method(store, "json", (path: string, fallback: Row) =>
+    path === learningSettingsFile ? saved : fallback,
+  );
+  mock.method(store, "save", (_path: string, value: Row) => {
+    saved = value;
+  });
+  try {
+    const feed = new Feed(),
+      policy = model("1:0:0:2", 0);
+    (feed as any).current.policy = policy;
+    assert.equal(feed.snapshot().policy, undefined);
+    saveLearningSettings(true);
+    assert.deepEqual(feed.snapshot().policy, policy);
+    saveLearningSettings(false);
+    assert.equal(feed.snapshot().policy, undefined);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
 test("paper partial rebalancing preserves quantity, cost basis and realized accounting", () => {
   const s = newAccount();
   buy(s, "A", 100, 10, 0, 99, 104);

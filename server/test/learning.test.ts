@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { store, type Row } from "../src/shared/storage.js";
 import {
   learningFile,
+  learningSettingsFile,
+  learningSettings,
+  saveLearningSettings,
+  learningExecutionEnabled,
   learningBucket,
   learningState,
   rememberLearning,
@@ -266,8 +270,17 @@ test("Q-learning isolates later outcomes, purges overlapping trades, and activat
       policies: { [learningBucket(ctx)]: first },
     });
     const recommend = learningAdvisor(ctx, "gems", at);
-    assert.ok(recommend(features).learning_adjustment > 0);
-    assert.ok(recommend(features).learning_adjustment <= 5);
+    assert.equal(learningSettings().execution_enabled, false);
+    assert.equal(recommend(features).learning_adjustment, 0);
+    assert.ok(recommend(features).learning_score > 0);
+    saveLearningSettings(true);
+    assert.equal(learningSettings().execution_enabled, true);
+    assert.ok(
+      learningAdvisor(ctx, "gems", at)(features).learning_adjustment > 0,
+    );
+    assert.ok(
+      learningAdvisor(ctx, "gems", at)(features).learning_adjustment <= 5,
+    );
     assert.equal(
       recommend({ return_3m_pct: 0, volatility_6m_pct: 10, rsi: 80 })
         .learning_adjustment,
@@ -280,6 +293,60 @@ test("Q-learning isolates later outcomes, purges overlapping trades, and activat
       0,
     );
     assert.equal(trainSelection(e.slice(0, 5), at).ready, false);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("learning remains advisory after restart or unreadable settings and recommendations stay scoped to their market and account", () => {
+  const f = setup();
+  const now = Date.now();
+  try {
+    rememberLearning(
+      ctx,
+      "gems",
+      [{ symbol: "TEST", ...features, reason: "Observed eligible scan" }],
+      now,
+    );
+    const india = { ...ctx, market: "India" as const, scope: "india-one" };
+    rememberLearning(india, "gems", [{ symbol: "INFY", ...features }], now);
+    assert.equal(learningSettings().execution_enabled, false);
+    const view = learningView(undefined, "US");
+    assert.equal(view.contexts.length, 1);
+    assert.equal(view.orders.length, 0);
+    assert.equal(view.episodes.length, 0);
+    assert.deepEqual(
+      view.recommendations.map((r: Row) => r.symbol),
+      ["TEST"],
+    );
+    assert.equal(
+      view.recommendations[0].learning_suggestion,
+      "Evidence needed",
+    );
+    assert.equal(
+      view.recommendations[0].observed_reason,
+      "Observed eligible scan",
+    );
+    assert.equal(
+      learningView(learningBucket(india), "US").recommendations.length,
+      0,
+    );
+    saveLearningSettings(true);
+    assert.equal(learningExecutionEnabled(), true);
+    assert.equal(f.saved.get(learningSettingsFile)!.execution_enabled, true);
+    saveLearningSettings(false);
+    assert.equal(learningExecutionEnabled(), false);
+    f.saved.get(learningFile)!.observations[
+      `${learningBucket(ctx)}:gems:TEST`
+    ][0].observed_at = now - 2 * 86400000;
+    assert.equal(
+      learningView(undefined, "US").recommendations[0].learning_suggestion,
+      "Refresh market observations",
+    );
+    mock.method(store, "json", () => {
+      throw new Error("Unavailable");
+    });
+    assert.equal(learningExecutionEnabled(), false);
   } finally {
     mock.restoreAll();
   }

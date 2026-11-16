@@ -5,6 +5,7 @@ import {
   type IndiaLive,
 } from "./india-trading";
 import { useAppearance } from "./appearance";
+import { LearningSettings } from "./trade-learning";
 import {
   Palette,
   Landmark,
@@ -117,6 +118,11 @@ export function AccountSettings({
             icon: ChartNoAxesCombined,
           },
           { id: "brokers", label: "Broker accounts", icon: Landmark },
+          {
+            id: "learning",
+            label: "Reinforcement learning",
+            icon: ChartNoAxesCombined,
+          },
           { id: "devices", label: "Mobile & security", icon: Smartphone },
         ].map(({ id, label, icon: Icon }) => (
           <button
@@ -593,6 +599,9 @@ export function AccountSettings({
             </details>
           </Card>
           <IndiaBrokerConnections />
+        </section>
+        <section id="settings-learning" className="settings-section">
+          <LearningSettings />
         </section>
         <section id="settings-devices" className="settings-section">
           <MobileSettings />

@@ -14,6 +14,7 @@ import {
   marketObservation,
   recordLearningOrders,
   learningAdvisor,
+  saveLearningSettings,
 } from "../learning.js";
 
 import {
@@ -369,10 +370,27 @@ export class IndiaTrading {
   get enabled(): boolean {
     return this.record?.auto?.enabled === true;
   }
+  get observing(): boolean {
+    const now = Date.now(),
+      hours = session(localDay(now, "NSE"), "NSE");
+    return !!(
+      this.state.broker_selected &&
+      this.record?.configured &&
+      hours &&
+      now >= hours[0] &&
+      now < hours[1]
+    );
+  }
   get hasPending(): boolean {
     return (this.record?.tickets ?? []).some((t: Row) =>
       pendingStatuses.has(t.status),
     );
+  }
+  setLearningExecution(enabled: boolean): Promise<Row> {
+    return this.lock.run(() => {
+      this.idle();
+      return saveLearningSettings(enabled);
+    });
   }
   private get settings(): IndiaSettings {
     return this.settingsFor(this.record);
@@ -787,6 +805,30 @@ export class IndiaTrading {
             asof: signals.asof,
             shortlist: signals.ranked,
           };
+          rememberLearning(
+            {
+              market: "India",
+              horizon: "trading",
+              broker: this.broker,
+              scope: this.account!,
+            },
+            signals.strategy,
+            (signals.candidates ?? signals.ranked).flatMap((pick) => {
+              const observation = marketObservation(
+                signals.bars[pick.symbol],
+                Date.now(),
+              );
+              return observation
+                ? [
+                    {
+                      ...pick,
+                      ...observation,
+                      reason: "Observed India trading scan; no order required",
+                    },
+                  ]
+                : [];
+            }),
+          );
           this.save();
         }
       })
@@ -1039,7 +1081,7 @@ export class IndiaTrading {
       if (this.stopped) return;
       if (this.enabled && Date.now() >= this.record!.auto.expires_at)
         this.stop("NSE session ended. Review any remaining broker positions.");
-      if (!this.enabled && !this.hasPending) return;
+      if (!this.enabled && !this.hasPending && !this.observing) return;
       try {
         await this.read();
         this.refreshFeed();

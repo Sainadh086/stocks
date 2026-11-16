@@ -16,6 +16,7 @@ import { MIN_DOLLAR_BUY } from "./order-limits.js";
 import { entryQuality, ENTRY_QUALITY_RULES } from "./quality.js";
 import {
   learningAdvisor,
+  learningExecutionEnabled,
   learningScope,
   marketObservation,
 } from "../learning.js";
@@ -75,6 +76,7 @@ export class Feed {
   snapshot(now = Date.now()): Signals {
     return {
       ...this.current,
+      policy: learningExecutionEnabled() ? this.current.policy : undefined,
       fresh:
         this.current.fresh &&
         !!this.current.asof &&
@@ -306,7 +308,10 @@ export class Feed {
         );
       this.current = {
         strategy: ROTATION_STRATEGY,
-        policy: this.exchange === "NYSE" ? configuredPolicy() : undefined,
+        policy:
+          this.exchange === "NYSE" && learningExecutionEnabled()
+            ? configuredPolicy()
+            : undefined,
         scan: {
           phase: "ready",
           completed: symbols.length,

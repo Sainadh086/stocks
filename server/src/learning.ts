@@ -3,6 +3,22 @@ import { join } from "node:path";
 import { store, US, type Row } from "./shared/storage.js";
 
 export const learningFile = join(US, "learning_journal.json");
+export const learningSettingsFile = join(US, "learning_settings.json");
+export function learningSettings(): { execution_enabled: boolean } {
+  const saved = store.json<Row>(learningSettingsFile, {});
+  return { execution_enabled: saved.execution_enabled === true };
+}
+export function learningExecutionEnabled(): boolean {
+  try {
+    return learningSettings().execution_enabled;
+  } catch {
+    return false;
+  }
+}
+export function saveLearningSettings(execution_enabled: boolean) {
+  store.save(learningSettingsFile, { version: 1, execution_enabled });
+  return learningSettings();
+}
 export interface LearningContext {
   market: "US" | "India";
   horizon: "trading" | "long_term";
@@ -600,8 +616,12 @@ export function learningAdvisor(
   now = Date.now(),
 ): (observation: Row) => Row {
   try {
-    const policy = load().policies[learningBucket(ctx)];
-    return (observation) => advice(policy, strategy, observation, now);
+    const policy = load().policies[learningBucket(ctx)],
+      enabled = learningExecutionEnabled();
+    return (observation) => ({
+      ...advice(policy, strategy, observation, now),
+      ...(!enabled ? { learning_adjustment: 0 } : {}),
+    });
   } catch {
     return () => ({
       learning_suggestion: "Unavailable",
@@ -647,9 +667,18 @@ export function recordPaperLearning(paper: Row): void {
     })),
   );
 }
-export function learningView(bucket?: string): Row {
+export function learningView(bucket?: string, market?: "India" | "US"): Row {
   const state = load(),
-    selected = bucket ?? Object.keys(state.contexts)[0],
+    execution_enabled = learningExecutionEnabled(),
+    contexts = Object.values<Row>(state.contexts).filter(
+      (ctx) => !market || ctx.market === market,
+    ),
+    selected = bucket
+      ? contexts.find((ctx) => ctx.bucket === bucket)?.bucket
+      : (market &&
+          (state.active?.[`${market}:trading`] ??
+            state.active?.[`${market}:long_term`])) ||
+        contexts[0]?.bucket,
     ctx = state.contexts[selected],
     orders: Row[] = Object.values<Row>(state.orders).filter(
       (o: any) => o.bucket === selected,
@@ -697,10 +726,43 @@ export function learningView(bucket?: string): Row {
         "Held-out trade-normalized return does not exceed the followed-strategy baseline. Do not infer an improvement from training scores.",
     });
   return {
-    contexts: Object.values(state.contexts),
+    contexts,
     selected: selected ?? null,
     context: ctx ?? null,
     policy,
+    execution_enabled,
+    recommendations: Object.entries<Row[]>(state.observations)
+      .filter(([key]) => !!ctx && key.startsWith(`${selected}:`))
+      .map(([, observations]) => observations.at(-1))
+      .filter((o): o is Row => !!o)
+      .map((o) => {
+        const fresh =
+          Date.now() >= o.observed_at &&
+          Date.now() - o.observed_at <=
+            (ctx.horizon === "trading" ? 120000 : 86400000);
+        return {
+          symbol: o.symbol,
+          strategy: o.strategy,
+          observed_at: new Date(o.observed_at).toISOString(),
+          observed_reason: o.reason,
+          ...advice(
+            policy,
+            o.strategy,
+            { ...o.features, intraday: ctx.horizon === "trading" },
+            Date.now(),
+          ),
+          ...(!execution_enabled ? { learning_adjustment: 0 } : {}),
+          ...(!fresh
+            ? {
+                learning_suggestion: "Refresh market observations",
+                learning_adjustment: 0,
+                learning_reason:
+                  "Previous observation; refresh this account or its analysis before using the recommendation.",
+              }
+            : {}),
+        };
+      })
+      .sort((a, b) => a.symbol.localeCompare(b.symbol)),
     orders: orders.sort(
       (a, b) => Date.parse(b.first_seen) - Date.parse(a.first_seen),
     ),

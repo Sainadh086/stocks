@@ -443,6 +443,7 @@ export function Recommendations() {
         <Refresh market={region} gems={strategy === "gems"} />
       </div>
       {region === "India" && <IndiaBrokerPicker />}
+      <TradeLearning key={region} market={region} />
       <Failure error={data.error} />
       {strategy === "gems" ? (
         <>

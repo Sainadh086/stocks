@@ -24,6 +24,92 @@ function isolatedService() {
   };
 }
 const options = { headers: { host: "127.0.0.1:8000" } };
+test("learning execution is opt-in, persists without enabling automation, and requires a valid authenticated setting", async () => {
+  const { service } = isolatedService();
+  const app = await createApp(service);
+  try {
+    const url = "/api/learning/settings";
+    assert.equal(
+      (await app.inject({ ...options, url })).json().execution_enabled,
+      false,
+    );
+    assert.equal(
+      (
+        await app.inject({
+          ...options,
+          url,
+          method: "POST",
+          payload: { execution_enabled: true },
+        })
+      ).statusCode,
+      403,
+    );
+    const token = (
+      await app.inject({ ...options, url: "/api/bootstrap" })
+    ).json().token;
+    const headers = { ...options.headers, "x-varshan-token": token };
+    for (const payload of [
+      {},
+      { execution_enabled: "true" },
+      { execution_enabled: true, auto: true },
+    ])
+      assert.equal(
+        (await app.inject({ headers, url, method: "POST", payload }))
+          .statusCode,
+        422,
+      );
+    assert.equal(
+      (
+        await app.inject({
+          headers,
+          url,
+          method: "POST",
+          payload: { execution_enabled: true },
+        })
+      ).json().execution_enabled,
+      true,
+    );
+    assert.equal(service.liveView().auto.enabled, false);
+    const restarted = new Service(false);
+    assert.equal(
+      (await app.inject({ ...options, url })).json().execution_enabled,
+      true,
+    );
+    (service as any).auto.enabled = true;
+    const blocked = await app.inject({
+      headers,
+      url,
+      method: "POST",
+      payload: { execution_enabled: false },
+    });
+    assert.match(blocked.json().detail, /Pause automatic/);
+    (service as any).auto.enabled = false;
+    const indiaEnabled = mock.getter(service.india, "enabled", () => true);
+    const indiaBlocked = await app.inject({
+      headers,
+      url,
+      method: "POST",
+      payload: { execution_enabled: false },
+    });
+    assert.match(indiaBlocked.json().detail, /Pause India/);
+    assert.equal(
+      (await app.inject({ ...options, url })).json().execution_enabled,
+      true,
+    );
+    indiaEnabled.mock.restore();
+    assert.equal(
+      (await restarted.setLearningExecution(false)).execution_enabled,
+      false,
+    );
+    assert.equal(
+      (await app.inject({ ...options, url })).json().execution_enabled,
+      false,
+    );
+  } finally {
+    await app.close();
+    mock.restoreAll();
+  }
+});
 test("Gems research accepts supported markets with local authorization and cannot create a trading draft", async () => {
   const { service } = isolatedService();
   const calls: string[] = [];

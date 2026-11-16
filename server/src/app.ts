@@ -27,6 +27,7 @@ import { selectedBroker, investmentScope } from "./brokers/india-selection.js";
 import { scope } from "./brokers/accounts.js";
 import {
   learningView,
+  learningSettings,
   refreshLearning,
   attributeLearning,
 } from "./learning.js";
@@ -529,8 +530,18 @@ export async function createApp(
     },
   );
   app.get("/api/us/gems/plan", () => service.usGemsPlan());
-  app.get<{ Querystring: { bucket?: string } }>("/api/learning", (request) =>
-    learningView(request.query.bucket),
+  app.get("/api/learning/settings", () => learningSettings());
+  app.post("/api/learning/settings", (request) => {
+    const p = strict({ execution_enabled: z.boolean() }).parse(request.body);
+    return service.setLearningExecution(p.execution_enabled);
+  });
+  app.get<{ Querystring: { bucket?: string; market?: string } }>(
+    "/api/learning",
+    (request) =>
+      learningView(
+        request.query.bucket,
+        z.enum(["India", "US"]).optional().parse(request.query.market),
+      ),
   );
   app.post("/api/learning/train", (request) => {
     const p = strict({ bucket: z.string().min(1).max(200) }).parse(

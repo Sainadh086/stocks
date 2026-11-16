@@ -17,6 +17,7 @@ import {
 import { shortlist } from "../src/trading/orb.js";
 import { Feed, type Signals } from "../src/trading/live.js";
 import { ROTATION_STRATEGY } from "../src/trading/rotation.js";
+import { learningView } from "../src/learning.js";
 
 const day = "2026-11-11",
   hours = session(day, "NSE")!,
@@ -397,6 +398,24 @@ async function workflow(outcome = "filled") {
     cancellations: () => cancellations,
   };
 }
+
+test("paused India trading observes configured scans and learns without placing orders", async () => {
+  const f = await workflow();
+  try {
+    assert.equal(f.engine.enabled, false);
+    assert.equal(f.engine.observing, true);
+    mock.timers.tick(16000);
+    await f.engine.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    const view = learningView(undefined, "India");
+    assert.ok(view.recommendations.some((r: Row) => r.symbol === "INFY"));
+    assert.equal(view.execution_enabled, false);
+    assert.equal(f.placements(), 0);
+    assert.equal(f.engine.enabled, false);
+  } finally {
+    restore();
+  }
+});
 
 test("manual India orders require a current server preview and explicit confirmation and cannot be sent twice", async () => {
   const f = await workflow();

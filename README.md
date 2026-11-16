@@ -543,7 +543,7 @@ workflows. Train a deterministic tabular Q-learning policy offline:
 
 ```sh
 npm --prefix server run backtest -- rl intraday.csv backtests/rl
-# Start the server with this absolute path to enable inference:
+# Supply an allocation policy, then enable learning influence in Account settings:
 export RL_MODEL_PATH="$PWD/backtests/rl/policy.json"
 npm start
 ```
@@ -565,7 +565,9 @@ be reduced when they exceed their target by more than 1% of equity (minimum $1);
 new buys still require an eligible opening-range breakout. Unknown or insufficiently
 trained states block entries and retain existing risk exits. A policy trained through
 the decision timestamp also blocks entries. RL decisions and coverage reasons appear
-in the existing live and paper monitors. Without RL_MODEL_PATH, the original
+in the existing live and paper monitors. Inference also requires **Account settings →
+Reinforcement learning → Use reinforcement learning in trading and automatic trading**.
+This setting defaults to off. Without RL_MODEL_PATH, the original
 allocation policy runs with the faster one-minute watchlist rotation.
 
 The RL replay evaluates allocation, not the full ORB execution overlay: its results
@@ -588,9 +590,16 @@ running backend; incremental scan counts require the updated server.
 
 ## Strategy reinforcement learning and trade evidence
 
-**Market learning → Strategy learning & trade journal** shows observed orders,
+**Recommendations → India / US reinforcement learning recommendations** shows
+stock suggestions, scores, reasons, observation dates and evidence requirements
+for the selected learning account. **Market learning → Strategy learning & trade journal** shows observed orders,
 closed position cycles, recorded reasoning, evidence gaps and evaluation. The
-existing offline portfolio Q-learner remains available separately. The new
+existing offline portfolio Q-learner remains available separately. Learning is
+advisory by default: validated scores do not alter investing plans or trading
+candidate order until the saved setting is explicitly enabled. Changing it requires
+both markets' automation to be paused and pending orders resolved. It never
+starts an automatic session. The setting lives in encrypted local workspace
+storage and survives refreshes and server restarts. The new
 one-step tabular Q-learner (a contextual bandit) learns select versus wait from
 realized outcomes. It is not a language model or a profitable-return guarantee.
 
@@ -599,7 +608,11 @@ and Kite delivery orders. Syncing Robinhood investing holdings also loads its
 available order history. Paper fills stay in a separate scope. Stable broker
 identities deduplicate repeated snapshots; cumulative partial-fill/status
 revisions remain in the encrypted journal without pruning buy/sell records.
-Capture failures surface in the advisor and cannot block protective broker exits.
+Configured trading accounts also observe fresh candidates during regular market
+hours while automation is paused, about once per minute with no browser open.
+Active trading retains its existing refresh cadence. These reads collect context
+and available order updates; they never submit orders. The server must be running
+and connected. Capture failures surface in the advisor and cannot block protective broker exits.
 Historical availability depends on broker retention and app refreshes; holdings
 alone cannot reconstruct missing executions or off-app history. Unavailable fill
 prices/timestamps remain unknown.
@@ -620,7 +633,8 @@ volatility, RSI and the followed strategy. Select reward is net realized return,
 with an extra 50% downside penalty; cash/wait reward is zero. A chronological
 70/30 split purges training outcomes overlapping evaluation entries. Policy tables
 are frozen during evaluation. Require 20 training cycles, 10 later evaluation
-cycles and five independent examples in a state. Rank adjustments activate only
+cycles and five independent examples in a state. With trading influence enabled,
+rank adjustments activate only
 when supported held-out outcomes beat the observed-strategy baseline and remain
 positive with doubled costs. Adjustments are bounded to five Gems score points;
 Gems eligibility and trading risk/consent checks stay authoritative. Uncovered

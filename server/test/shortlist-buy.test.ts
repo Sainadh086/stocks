@@ -6,6 +6,7 @@ import { ticketsFile, type connected } from "../src/brokers/robinhood.js";
 import { store, type Row } from "../src/shared/storage.js";
 import { session } from "../src/shared/calendar.js";
 import { STRATEGY } from "../src/trading/orb.js";
+import { learningView, learningBucket } from "../src/learning.js";
 
 const day = "2026-11-11",
   now = session(day)![0] + 1230000;
@@ -194,6 +195,36 @@ test("a shortlisted US buy previews and confirms only the chosen stock, with no 
     /already confirmed/,
   );
   assert.equal(f.placed.length, 1);
+});
+
+test("US trading observes candidates without requiring a buy preview or a trade", async () => {
+  const f = fixture();
+  for (const frame of Object.values(f.signals.bars)) {
+    const completed = frame[0];
+    frame.unshift(
+      ...[3, 2, 1].map((i) => ({
+        ...completed,
+        time: completed.time - i * 300000,
+      })),
+    );
+  }
+  await (f.service as any).tick();
+  const view = learningView(
+    learningBucket({
+      market: "US",
+      horizon: "trading",
+      broker: "robinhood",
+      scope: scope("TRADE"),
+    }),
+  );
+  assert.deepEqual(
+    view.recommendations.map((r: Row) => r.symbol),
+    ["A", "B"],
+  );
+  assert.equal(view.execution_enabled, false);
+  assert.equal(view.episodes.length, 0);
+  assert.equal(f.reviewed.length, 0);
+  assert.equal(f.placed.length, 0);
 });
 
 test("stale accounts, stale shortlists, unknown symbols and unresolved orders cannot produce a direct buy", async () => {
