@@ -296,6 +296,34 @@ if (
     throw new Error(
       "Usage: npm run backtest -- orb|momentum|rl input.csv output-directory [benchmark-symbol]",
     );
+  const { Vault } = await import("./vault.js");
+  const { rememberedKey } = await import("./remembered-key.js");
+  const vault = new Vault(store, rememberedKey(store.root));
+  if (vault.configured() && !vault.tryAutoUnlock()) {
+    if (!process.stdin.isTTY)
+      throw new Error(
+        "Run backtests in an interactive terminal to enter your Varshan password.",
+      );
+    const { createInterface } = await import("node:readline/promises");
+    const { Writable } = await import("node:stream");
+    // Discard terminal echo so the encryption password never appears in logs.
+    const prompt = createInterface({
+      input: process.stdin,
+      output: new Writable({
+        write(_chunk, _encoding, done) {
+          done();
+        },
+      }),
+      terminal: true,
+    });
+    process.stderr.write("Varshan encryption password: ");
+    try {
+      await vault.unlock(await prompt.question(""));
+    } finally {
+      prompt.close();
+      process.stderr.write("\n");
+    }
+  }
   const bars = parseBars(
     store.csv(resolve(input)),
     mode === "momentum" ? "NSE" : "NYSE",

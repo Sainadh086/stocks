@@ -27,9 +27,9 @@ Open http://127.0.0.1:8000 (override with PORT). Stop with Ctrl+C.
 --setup   Reinstall locked dependencies and build, without starting the API.
 --help    Show this help.
 
-On Windows/Linux, supply VARSHAN_ENCRYPTION_KEY as a base64-encoded 32-byte
-secret from your password manager. Keep the same key for subsequent launches.
-macOS uses its existing Keychain unless this environment variable is provided.
+Choose your encryption password in the desktop browser on first launch.
+macOS remembers the encryption key securely in Keychain for automatic opening.
+Existing data uses its original Keychain or VARSHAN_ENCRYPTION_KEY during setup.
 See docs/running.md for setup and copying the app to another machine.`;
 
 export function configuration({
@@ -64,10 +64,6 @@ export function configuration({
       "VARSHAN_ENCRYPTION_KEY must encode exactly 32 random bytes in base64.",
     );
   const setup = args.includes("--setup");
-  if (!setup && platform !== "darwin" && !key)
-    throw new Error(
-      "Set VARSHAN_ENCRYPTION_KEY before starting on Windows/Linux. See docs/running.md.",
-    );
   const mobile = args.includes("--mobile") || env.VARSHAN_MOBILE === "1";
   if (mobile && platform !== "darwin")
     throw new Error(

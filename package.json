@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "setup": "node scripts/start.mjs --setup",
+    "desktop": "node scripts/create-desktop-app.mjs",
     "test:launcher": "node --test scripts/start.test.mjs",
     "build": "npm --prefix server run build && npm --prefix frontend run build",
     "test": "npm run test:launcher && npm --prefix server test && npm --prefix frontend test",

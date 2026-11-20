@@ -69,6 +69,8 @@ backtests/
 
 # Local runtime state, logs, database copies and private exports/backups.
 .local/
+.varshan-vault.json
+Varshan.app/
 *.pid
 *.pid.lock
 *.log

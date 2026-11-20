@@ -135,6 +135,10 @@ export class Storage {
   ) {}
   private encryptionKey(): Buffer {
     if (this.key) return this.key;
+    if (existsSync(join(this.root, ".varshan-vault.json")))
+      throw new Error(
+        "Unlock Varshan with your password in the desktop browser.",
+      );
     if (this.resolveKey) return (this.key = this.resolveKey());
     const supplied = process.env.VARSHAN_ENCRYPTION_KEY;
     if (supplied !== undefined) {
@@ -209,6 +213,41 @@ export class Storage {
     const key = Buffer.from(encoded, "base64url");
     if (key.length !== 32) throw new Error("Invalid Keychain encryption key.");
     return (this.key = key);
+  }
+  /** Keep the unlocked data key in this process only. */
+  unlock(key: Buffer): void {
+    if (key.length !== 32) throw new Error("Invalid encryption key.");
+    this.key = Buffer.from(key);
+  }
+  private encryptedFiles(): string[] {
+    return [
+      join(this.root, ".env"),
+      join(this.root, ".robinhood_oauth.enc"),
+      ...walk(join(this.root, "india_stocks")),
+      ...walk(join(this.root, "us_stocks")),
+      ...walk(join(this.root, "backtests")),
+    ].filter(
+      (path) =>
+        existsSync(path) &&
+        readFileSync(path).subarray(0, MAGIC.length).equals(MAGIC),
+    );
+  }
+  verifyKey(key: Buffer): boolean {
+    const encrypted = this.encryptedFiles();
+    for (const path of encrypted)
+      decrypt(readFileSync(path).subarray(MAGIC.length), key);
+    return encrypted.length > 0;
+  }
+  passwordSetupKey(): Buffer {
+    const key =
+      this.encryptedFiles().length ||
+      this.resolveKey ||
+      process.env.VARSHAN_ENCRYPTION_KEY !== undefined
+        ? this.encryptionKey()
+        : randomBytes(32);
+    // A mistaken migration key must never become the password-protected key.
+    this.verifyKey(key);
+    return Buffer.from(key);
   }
   read(path: string): string {
     const data = readFileSync(path);

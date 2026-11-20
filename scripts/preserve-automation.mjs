@@ -1,16 +1,25 @@
 // One-time migration for the pre-persistence server, performed before stopping it.
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { store } from "../server/dist/src/shared/storage.js";
 import {
   automationPreferencePath,
   preferenceFromSnapshot,
 } from "../server/dist/src/trading/automation.js";
 
-if (!existsSync(automationPreferencePath)) {
+if (
+  !existsSync(automationPreferencePath) &&
+  !existsSync(join(store.root, ".varshan-vault.json"))
+) {
   try {
     const port = Number(process.env.PORT ?? 8000);
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       throw new Error("Invalid local port.");
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    // Locked startup has not loaded workers or an in-memory trading choice.
+    if (health.ok && (await health.json()).locked) process.exit(0);
     const response = await fetch(`http://127.0.0.1:${port}/api/live`, {
       signal: AbortSignal.timeout(5000),
     });

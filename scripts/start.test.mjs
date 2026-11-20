@@ -35,10 +35,7 @@ test("preflight supports desktop on all three platforms and rejects invalid conf
   ])
     assert.throws(() => configuration({ args: [], env }));
   for (const platform of ["linux", "win32"]) {
-    assert.throws(
-      () => configuration({ args: [], platform, env: {} }),
-      /VARSHAN_ENCRYPTION_KEY/,
-    );
+    assert.equal(configuration({ args: [], platform, env: {} }).port, 8000);
     assert.throws(
       () =>
         configuration({

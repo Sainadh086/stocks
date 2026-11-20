@@ -12,10 +12,22 @@ npm start
 ```
 
 The portable launcher installs missing locked dependencies, builds both apps and
-serves them at **http://127.0.0.1:8000**. Stop with Ctrl+C. Windows/Linux require
-`VARSHAN_ENCRYPTION_KEY`; macOS keeps using Keychain. See
+serves them at **http://127.0.0.1:8000**. Choose your own encryption password in
+the browser on first launch (at least 12 characters, entered twice). Later server
+starts open automatically on this Mac using the encryption key saved securely in
+Keychain. The password is for setup and recovery. Stop with
+Ctrl+C. Existing encrypted installations reuse their original Keychain or
+`VARSHAN_ENCRYPTION_KEY` during first-time password setup. See
 [cross-platform setup and data migration](docs/running.md) for key setup,
 PowerShell commands, dependency updates and Mac-only feature requirements.
+
+On this Mac, double-click **Varshan.app** in the `stocks` folder to start the
+background server and open the browser. Drag the app to the Dock for quick access.
+To recreate the app icon after moving the project, run `npm run desktop`.
+Closing the browser leaves the server unlocked and running; `sh web.sh stop`
+stops it. The next start opens automatically using Keychain. Keep the project folder in
+place, and back up `.varshan-vault.json` with your encrypted data. The app does
+not offer a forgotten-password reset.
 
 For background operation on the existing Mac installation:
 
@@ -66,8 +78,12 @@ Private files remain in `india_stocks/`, `us_stocks/`, `backtests/` and the
 existing encrypted `.env` and Robinhood OAuth cache. Storage is compatible with
 the original authenticated Fernet format. On macOS the default key stays in Keychain under
 `local-stock-portfolio`, with the original absolute project path as its account.
-The first Node launch may ask macOS for Keychain access. Do not move the project
-without also migrating its Keychain identity. No plaintext key file is created.
+First-time password setup may ask macOS for Keychain access to preserve existing
+data. The data key is saved encrypted by your password in `.varshan-vault.json`;
+your password is never saved. The data key is also remembered securely in macOS
+Keychain, so normal launches need no password. The password and vault file can
+restore access when the remembered key is unavailable. No
+plaintext key file is created.
 
 Choose **India broker account** in Account settings, Holdings or Recommendations.
 There is no default broker: the saved Kite, Upstox or Groww account applies to

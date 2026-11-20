@@ -7,21 +7,55 @@ TypeScript installation are not required.
 
 ## Start
 
-On macOS, the existing macOS Keychain stores the encryption key:
+On every supported platform:
 
 ```sh
 npm start
 ```
 
-On Windows or Linux, first supply `VARSHAN_ENCRYPTION_KEY` as a secret environment
-variable. Generate a new key **once for a fresh workspace**:
+Open **http://127.0.0.1:8000**. On first launch, choose a password of at least
+12 characters and confirm it in the web page. On this Mac, the data key is remembered
+securely in Keychain and later launches open automatically. The password is used
+for setup and recovery, rather than as an app login. If Keychain access is unavailable,
+the recovery password screen appears. A browser reload or closing and reopening
+a tab does not affect the running server. Stop the server with Ctrl+C or `sh web.sh stop`.
+
+On macOS, run `npm run desktop` once to create **Varshan.app** in the project
+folder. Double-click it in Finder, or drag it to the Dock. It starts the background
+server and opens the browser; an already-running server is reused. Keep the project
+folder in place, and recreate the launcher after moving it. Stop the background
+server with `sh web.sh stop`. Launch errors are recorded in `.local/app-launch.log`.
+Creating the app uses Apple's command-line tools (`xcode-select --install` if needed).
+
+The password wraps the existing 32-byte data key using authenticated encryption
+and Node's scrypt (a random 16-byte salt, N=32768, r=8, p=1). The password is not
+written to disk or browser storage. The wrapped key lives in `.varshan-vault.json`
+in the project root. Back up that file **together with** your encrypted data and
+save your password in your password manager. There is no password-reset feature.
+The random data key is also saved in macOS Keychain for automatic opening; the
+password itself is never remembered. Existing Keychain entries are reused after
+checking the encrypted files. Migration does not rotate the data key or remove
+your existing recovery credentials. On Windows/Linux, supplying the original
+`VARSHAN_ENCRYPTION_KEY` also allows automatic opening; without an OS-backed
+remembered key, the password remains the fallback.
+
+The offline backtest CLI also reuses the remembered key. If it is unavailable,
+run the CLI in an interactive terminal to enter the password with input hidden.
+
+For **existing encrypted data** that has not had password setup, macOS reads the
+original Keychain entry. On Windows/Linux or a copied workspace, supply the
+original `VARSHAN_ENCRYPTION_KEY` as a secret environment variable before first
+setup. The app checks it against the encrypted files before saving the password.
+After setup, the password and vault file are sufficient for normal web launches.
+Fresh installations do not need an environment key.
+
+For advanced use, an environment key can be generated **only for a fresh workspace**:
 
 ```sh
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 ```
 
-Save the generated value in your password manager and use that same value every
-time you start this workspace. Prefer your password manager's environment-secret
+Save the generated value in your password manager. Prefer your password manager's environment-secret
 injection. The following examples use a placeholder; never commit a real key or
 put it in the app's `.env` file (that file can itself be encrypted).
 
@@ -39,9 +73,9 @@ $env:VARSHAN_ENCRYPTION_KEY = 'YOUR_SAVED_BASE64_KEY'
 npm start
 ```
 
-Open **http://127.0.0.1:8000** after the server reports `varshan desktop`.
-The header's API indicator confirms whether the API is responding. Keep the
-terminal open and stop with **Ctrl+C**.
+For `npm start`, keep the terminal open and stop with **Ctrl+C**. For the app icon,
+the server runs in the background. The header's API indicator confirms whether the
+unlocked API is responding.
 
 The launcher installs locked server/frontend dependencies if their `node_modules`
 folders are missing, builds both applications and starts the API, which serves
@@ -122,7 +156,12 @@ Exclude `node_modules`, `dist`, `.tools`, `.local`, `.env`, `.robinhood_oauth*`,
 build outputs, runtime folders and Mac certificates are machine-specific or
 created as needed. Connect your broker accounts on the new machine.
 
-Existing encrypted data requires its **original encryption key**. On macOS that
+After password setup, copy `.varshan-vault.json` with the private data, then unlock
+using the same password on the new computer. On a new Mac, that first recovery
+remembers the key in its Keychain for subsequent automatic launches. Do not copy active process locks.
+The vault file is intentionally excluded from Git and must be backed up separately.
+
+Before password setup, existing encrypted data requires its **original encryption key**. On macOS that
 key belongs to the Keychain service `local-stock-portfolio`, with the old absolute
 project path as its account. Moving the folder or computer does not move its
 Keychain entry. Migrate that key securely and supply it through
