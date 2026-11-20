@@ -29,7 +29,7 @@ import {
 import { TradeDecisionChanged } from "../trading/rotation.js";
 import { MIN_DOLLAR_BUY } from "../trading/order-limits.js";
 import { PersistentSession, type SessionLease } from "./persistent-session.js";
-import { eligible, roles, requireTrading, holdingsPath } from "./accounts.js";
+import { eligible, roles, requireTrading, requireLongTerm, holdingsPath, type AccountRole } from "./accounts.js";
 export class BrokerError extends Error {
   constructor(
     message: string,
@@ -365,6 +365,14 @@ export async function verifyTrading(
       "Saved daily trading account is unavailable or not Agentic eligible.",
     );
 }
+export async function verifyLongTerm(s: BrokerSession, number: string): Promise<void> {
+  requireLongTerm(number);
+  const available = (await s.call("get_accounts", {})).accounts;
+  if (!available.some((account: Row) => account.account_number === number && eligible(account)))
+    throw new Error("Saved long-term account is unavailable.");
+}
+const verifyRole = (s: BrokerSession, number: string, role: AccountRole) =>
+  role === "long_term" ? verifyLongTerm(s, number) : verifyTrading(s, number);
 export async function readSnapshot(
   s: BrokerSession,
   number: string,
@@ -500,7 +508,7 @@ export function saveTicket(ticket: Row): void {
     recordLearningOrders(
       {
         market: "US",
-        horizon: "trading",
+        horizon: ticket.role === "long_term" ? "long_term" : "trading",
         broker: "robinhood",
         scope: learningScope(ticket.arguments.account_number),
       },
@@ -508,9 +516,9 @@ export function saveTicket(ticket: Row): void {
       [ticket],
     );
 }
-export const listTickets = (number?: string | null) =>
+export const listTickets = (number?: string | null, role: AccountRole = "trading") =>
   Object.values(tickets())
-    .filter((t) => t.arguments.account_number === number)
+    .filter((t) => t.arguments.account_number === number && (t.role ?? "trading") === role)
     .sort((a, b) => b.reviewed_at.localeCompare(a.reviewed_at));
 export function positiveDecimal(raw: unknown, places = 6): string {
   let d: Decimal;
@@ -593,10 +601,11 @@ async function sellCheck(s: BrokerSession, args: Row) {
 export async function review(
   args: Row,
   broker: typeof connected = connected,
+  role: AccountRole = "trading",
 ): Promise<Row> {
   validateBuyAmount(args);
   const data = await broker(async (s) => {
-    await verifyTrading(s, args.account_number);
+    await verifyRole(s, args.account_number, role);
     await sellCheck(s, args);
     return s.call("review_equity_order", args);
   });
@@ -611,10 +620,12 @@ export async function review(
 export async function preview(
   args: Row,
   broker: typeof connected = connected,
+  role: AccountRole = "trading",
 ): Promise<Row> {
-  const data = await review(args, broker);
+  const data = await review(args, broker, role);
   const ticket = {
     id: randomUUID(),
+    role,
     arguments: args,
     preview: data,
     reviewed_at: new Date().toISOString(),
@@ -633,6 +644,7 @@ export async function submit(
   validate: (ticket: Row, s: BrokerSession) => Promise<void>,
   consent: () => void,
   broker: typeof connected = connected,
+  role: AccountRole = "trading",
 ): Promise<Row> {
   return submitLock.run(async () => {
     if (acknowledged !== true)
@@ -641,6 +653,8 @@ export async function submit(
       ticket = all[id];
     if (!ticket || ticket.status !== "preview")
       throw new Error("Order preview expired or was already submitted.");
+    if ((ticket.role ?? "trading") !== role)
+      throw new Error("Order belongs to a different account role.");
     if (!previewCurrent(ticket))
       throw new TradeDecisionChanged(
         "Order preview expired. Review a fresh order.",
@@ -663,7 +677,7 @@ export async function submit(
     try {
       validateBuyAmount(ticket.arguments);
       await broker(async (s) => {
-        await verifyTrading(s, ticket.arguments.account_number);
+        await verifyRole(s, ticket.arguments.account_number, role);
         await sellCheck(s, ticket.arguments);
         await validate(ticket, s);
         // Revalidation can shrink a previously valid preview.

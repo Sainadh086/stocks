@@ -62,6 +62,11 @@ export function requireTrading(number: string): void {
       "Use only the saved daily trading account for intraday orders.",
     );
 }
+export function requireLongTerm(number: string): void {
+  const saved = roles();
+  if (!number || saved.long_term !== number || saved.trading === number)
+    throw new Error("Use the saved long-term investing account for this purchase.");
+}
 export const holdingsPath = () => {
   const number = roles().long_term;
   return number

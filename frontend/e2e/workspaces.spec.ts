@@ -331,6 +331,7 @@ test.beforeEach(async ({ page }) => {
     if (path === "/api/portfolios")
       data = {
         india: {
+          scope: "fixture-india-investing",
           as_of: "2026-10-09",
           holdings: [
             {
@@ -524,7 +525,7 @@ test.beforeEach(async ({ page }) => {
         broker: null,
         brokers: [],
         scope: null,
-        investment_scope: null,
+        investment_scope: "fixture-india-investing",
         auto: { enabled: false },
         tickets: [],
       };
@@ -1492,4 +1493,137 @@ test("old backends cannot receive unsupported themes and settings sections navig
   expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
     true,
   );
+});
+
+for (const width of [1024, 900, 768, 390, 320]) {
+  test(`responsive layout keeps text and controls contained at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    for (const workspace of [
+      "holdings",
+      "recommendations",
+      "weekly",
+      "trading",
+      "benchmark",
+      "learning",
+    ]) {
+      await page.goto(`/?workspace=${workspace}`);
+      await expect(page.locator("#workspace h1")).toBeVisible();
+      await expect(page.locator(".market-pill").first()).toBeVisible();
+      const problems = await page.evaluate(() => {
+        const issues: string[] = [];
+        if (document.documentElement.scrollWidth > innerWidth + 1)
+          issues.push(
+            `page width ${document.documentElement.scrollWidth} exceeds ${innerWidth}`,
+          );
+        for (const element of document.querySelectorAll<HTMLElement>(
+          ".topbar, .page-heading, .workspace-toolbar, .card-heading, .segments, .metric, .form-row, .table-tools",
+        )) {
+          if (!element.checkVisibility() || element.closest("[hidden]"))
+            continue;
+          const box = element.getBoundingClientRect();
+          if (element.scrollWidth > element.clientWidth + 2)
+            issues.push(
+              `${element.className}: content width ${element.scrollWidth} exceeds ${element.clientWidth}`,
+            );
+          for (const child of element.children) {
+            if (!(child instanceof HTMLElement) || !child.checkVisibility())
+              continue;
+            const rect = child.getBoundingClientRect();
+            if (rect.right > box.right + 2 || rect.left < box.left - 2)
+              issues.push(
+                `${element.className}: ${child.tagName} escapes its row`,
+              );
+          }
+        }
+        return issues;
+      });
+      expect(problems, `${workspace} at ${width}px`).toEqual([]);
+    }
+    await page.getByRole("button", { name: "Open account settings" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    expect(
+      await dialog.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth + 1,
+      ),
+    ).toBe(true);
+  });
+}
+
+test("long table text wraps within its column without overlapping adjacent values", async ({
+  page,
+}) => {
+  await page.route("**/api/weekly/India", (route) =>
+    route.fulfill({
+      json: {
+        role: "India",
+        from: "2026-11-12T12:00:00Z",
+        to: "2026-11-19T12:00:00Z",
+        generated_at: new Date().toISOString(),
+        summary: "Saved weekly review",
+        markets: [],
+        holdings: [
+          {
+            symbol: "INFY",
+            weekly_price_change_pct: 1.2,
+            start_date: "2026-11-12",
+            end_date: "2026-11-19",
+            source:
+              "Historical market data from the broker, with completed daily sessions and a delayed quote fallback. ".repeat(
+                4,
+              ),
+            headlines: [],
+            error:
+              "Headlines temporarily unavailable while the provider retries the request. ".repeat(
+                3,
+              ),
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/?workspace=weekly");
+  const table = page.getByRole("table", { name: "Weekly holdings moves" });
+  await expect(table).toBeVisible();
+  expect(
+    await table
+      .getByRole("cell", { name: /^Historical market data/ })
+      .evaluate((cell) => cell.getBoundingClientRect().width),
+  ).toBeGreaterThanOrEqual(220);
+  for (const width of [1024, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(width);
+    const escapingText = await table.locator("td").evaluateAll((cells) =>
+      cells.flatMap((cell) => {
+        const range = document.createRange();
+        range.selectNodeContents(cell);
+        const box = cell.getBoundingClientRect();
+        return [...range.getClientRects()].some(
+          (rect) => rect.right > box.right + 1 || rect.left < box.left - 1,
+        )
+          ? [cell.textContent?.slice(0, 70)]
+          : [];
+      }),
+    );
+    expect(escapingText, `table text at ${width}px`).toEqual([]);
+    await table
+      .getByRole("cell", { name: /^Historical market data/ })
+      .scrollIntoViewIfNeeded();
+    if (width <= 860)
+      await expect
+        .poll(() =>
+          page
+            .locator(".sidebar")
+            .evaluate((element) => element.getBoundingClientRect().right),
+        )
+        .toBeLessThanOrEqual(0);
+    await page.screenshot({
+      path: `/private/tmp/varshan-layout-fixed-${width}.png`,
+      animations: "disabled",
+    });
+  }
 });

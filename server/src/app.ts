@@ -25,6 +25,7 @@ import { indiaTradingIndexNames } from "./trading/india-indices.js";
 import { brokerIds } from "./brokers/india.js";
 import { selectedBroker, investmentScope } from "./brokers/india-selection.js";
 import { scope } from "./brokers/accounts.js";
+import { purchaseHistory } from "./investing.js";
 import {
   learningView,
   learningSettings,
@@ -623,6 +624,23 @@ export async function createApp(
     );
   });
   app.get("/api/live", () => service.liveView());
+  app.post("/api/investing/preview", (request) => {
+    const p = strict({ market: z.enum(["India", "US"]), symbol: z.string().trim().min(1).max(30),
+      expected_scope: z.string().min(1).max(64), amount: z.number().finite().positive().optional(),
+      quantity: z.number().int().positive().safe().optional(), exchange: z.enum(["NSE", "BSE"]).optional(),
+    }).parse(request.body);
+    return service.job(`investing-preview:${p.market}:${p.symbol}:${p.expected_scope}`, () => service.previewInvestment(p));
+  });
+  app.get<{ Params: { market: string } }>("/api/investing/:market/orders", request =>
+    purchaseHistory(z.enum(["India", "US"]).parse(request.params.market)));
+  for (const operation of ["confirm", "status"] as const)
+    app.post<{ Params: { market: string; id: string } }>(`/api/investing/:market/orders/:id/${operation}`, request => {
+      const market = z.enum(["India", "US"]).parse(request.params.market);
+      const p = strict({ expected_scope: z.string().min(1).max(64), ...(operation === "confirm" ? { acknowledged: z.literal(true) } : {}) }).parse(request.body);
+      return service.job(`investing-${operation}:${market}:${request.params.id}`, () => operation === "confirm"
+        ? service.confirmInvestment(market, request.params.id, p.expected_scope, true)
+        : service.investmentStatus(market, request.params.id, p.expected_scope));
+    });
   app.post("/api/live/refresh", () =>
     service.job("live-refresh", () => service.refreshLive()),
   );

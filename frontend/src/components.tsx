@@ -220,15 +220,18 @@ export function Table({
       .slice(0, 12);
   const columnClasses = Object.fromEntries(
     keys.map((key) => {
-      if (
-        /reason|description|strategies|message|notes|summary|quality_review|review_priority/i.test(
-          key,
-        )
-      )
-        return [key, "description"];
       const values = rows
         .map((row) => row[key])
         .filter((v) => v !== null && v !== undefined && v !== "");
+      if (
+        /reason|description|strategies|message|notes|summary|quality_review|review_priority/i.test(
+          key,
+        ) ||
+        values.some(
+          (value) => num(value) === undefined && display(value).length > 60,
+        )
+      )
+        return [key, "description"];
       return [
         key,
         values.length && values.every((v) => num(v) !== undefined)

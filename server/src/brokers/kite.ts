@@ -307,7 +307,7 @@ const save = (batch: Row) =>
 export async function review(
   edited: Row[],
   original: Row[],
-  expected?: { broker: string; user: string },
+  expected?: { broker: string; user: string; purpose?: string },
 ): Promise<Row> {
   const broker = requireBroker(),
     orders = ordersFromEditor(edited, original),
@@ -339,6 +339,7 @@ export async function review(
     user: account.user,
     broker,
     orders,
+    ...(expected?.purpose ? { purpose: expected.purpose } : {}),
     status: "review",
     results: [],
     reviewed_at: new Date().toISOString(),

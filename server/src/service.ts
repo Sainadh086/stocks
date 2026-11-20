@@ -14,6 +14,7 @@ import {
 import * as accounts from "./brokers/accounts.js";
 import * as robinhood from "./brokers/robinhood.js";
 import * as kite from "./brokers/kite.js";
+import * as investing from "./investing.js";
 import { investingState } from "./brokers/india.js";
 import {
   requireBroker,
@@ -1423,6 +1424,15 @@ export class Service {
   }
   indiaRecommendation(strategy: string, selected?: string[], exits?: string[]) {
     return indiaPlan(strategy, selected, exits);
+  }
+  previewInvestment(p: investing.PurchaseRequest): Promise<Row> {
+    return this.lock.run(() => investing.previewPurchase(p, this.broker));
+  }
+  confirmInvestment(market: investing.InvestmentMarket, id: string, expected: string, acknowledged: boolean): Promise<Row> {
+    return this.lock.run(() => investing.confirmPurchase(market, id, expected, acknowledged, this.broker));
+  }
+  investmentStatus(market: investing.InvestmentMarket, id: string, expected: string): Promise<Row> {
+    return this.lock.run(() => investing.purchaseStatus(market, id, expected, this.broker));
   }
   kiteDraft(
     strategy: string,
